@@ -96,6 +96,9 @@ class FSDPWorker(Worker):
         if self.config.actor.disable_kl:
             self._has_ref = False
 
+        self._supports_flash_attn2 = self._check_flash_attn2_support()
+        self._normalize_attention_backend_config()
+
         self._lora_rank = self.config.actor.model.lora.rank
         self._is_lora = self._lora_rank > 0
 
@@ -114,6 +117,28 @@ class FSDPWorker(Worker):
 
         if self._has_ref:  # NOTE: it seems that manual offload is slower than FSDP offload
             self._use_ref_param_offload = self.config.ref.offload.offload_params
+
+    def _check_flash_attn2_support(self) -> bool:
+        if not torch.cuda.is_available():
+            return False
+        major, _ = torch.cuda.get_device_capability(torch.cuda.current_device())
+        return major >= 8
+
+    def _normalize_attention_backend_config(self) -> None:
+        if self._supports_flash_attn2:
+            return
+
+        self.print_rank0(
+            "Detected pre-Ampere GPU (compute capability < 8.0). "
+            "Falling back from FlashAttention-2 to SDPA."
+        )
+        if self.config.actor.padding_free:
+            self.config.actor.padding_free = False
+            self.config.ref.padding_free = False
+            self.print_rank0("Disabled `worker.actor.padding_free` (and mirrored ref setting) for compatibility.")
+        if self.config.critic.padding_free:
+            self.config.critic.padding_free = False
+            self.print_rank0("Disabled `worker.critic.padding_free` for compatibility.")
 
     def _init_dist_mesh(self, config: Union[ActorConfig, CriticConfig], role: Literal["actor", "critic"]):
         world_size = dist.get_world_size()
@@ -207,12 +232,14 @@ class FSDPWorker(Worker):
         else:
             AutoClass = AutoModelForCausalLM
 
+        attn_implementation = "flash_attention_2" if self._supports_flash_attn2 else "sdpa"
+
         if (not fsdp_config.enable_rank0_init) or self.device_mesh.get_local_rank("fsdp") == 0:
             model = AutoClass.from_pretrained(
                 model_config.model_path,
                 config=self.model_config,
                 torch_dtype=torch_dtype,
-                attn_implementation="flash_attention_2",
+                attn_implementation=attn_implementation,
                 device_map="cpu" if fsdp_config.enable_rank0_init else "cuda",
                 low_cpu_mem_usage=True,
                 trust_remote_code=model_config.trust_remote_code,
@@ -222,7 +249,7 @@ class FSDPWorker(Worker):
                 model = AutoClass.from_config(
                     self.model_config,
                     torch_dtype=torch_dtype,
-                    attn_implementation="flash_attention_2",
+                    attn_implementation=attn_implementation,
                     trust_remote_code=model_config.trust_remote_code,
                 )
 
@@ -681,6 +708,9 @@ class FSDPWorker(Worker):
             load_fsdp_model(self.ref_fsdp_module)
 
         data.meta_info["temperature"] = self.config.rollout.temperature
+        # Latent capture is only needed for the actor old_log_probs pass.
+        # Ref policy should always return a single tensor of log_probs.
+        data.meta_info["capture_latent"] = False
         with self.ulysses_sharding_manager, adapter_ctx:
             data = self.ulysses_sharding_manager.preprocess_data(data)
             output = self.ref_policy.compute_log_prob(data=data)

@@ -140,11 +140,13 @@ class TensorBoardLogger(Logger):
 
 class WandbLogger(Logger):
     def __init__(self, config: dict[str, Any]) -> None:
-        wandb.init(
+        self.run = wandb.init(
             project=config["trainer"]["project_name"],
             name=config["trainer"]["experiment_name"],
             config=config,
         )
+        if self.run is not None and getattr(self.run, "url", None):
+            print(f"W&B run URL: {self.run.url}")
 
     def log(self, data: dict[str, Any], step: int) -> None:
         wandb.log(data=data, step=step)
