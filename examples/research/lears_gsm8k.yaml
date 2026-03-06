@@ -1,0 +1,137 @@
+data:
+  train_files: openai/gsm8k:socratic@train
+  val_files: openai/gsm8k:socratic@test
+  prompt_key: question
+  answer_key: answer
+  format_prompt: ./examples/format_prompt/math.jinja
+  max_prompt_length: 1024
+  max_response_length: 1024
+  rollout_batch_size: 8
+  mini_rollout_batch_size: null
+  val_batch_size: 32
+  shuffle: true
+  seed: 1
+
+algorithm:
+  adv_estimator: grpo
+  disable_kl: false
+  use_kl_loss: true
+  kl_penalty: low_var_kl
+  kl_coef: 1.0e-2
+  online_filtering: false
+
+worker:
+  actor:
+    global_batch_size: 8
+    micro_batch_size_per_device_for_update: 1
+    micro_batch_size_per_device_for_experience: 1
+    max_grad_norm: 1.0
+    padding_free: true
+    dynamic_batching: true
+    ulysses_size: 1
+    model:
+      model_path: Qwen/Qwen3-4B
+      enable_gradient_checkpointing: true
+      trust_remote_code: false
+      lora:
+        rank: 64
+        alpha: 64
+        target_modules: all-linear
+    optim:
+      lr: 1.0e-5
+      weight_decay: 1.0e-2
+      strategy: adamw
+    fsdp:
+      enable_full_shard: true
+      enable_cpu_offload: false
+      enable_rank0_init: true
+      torch_dtype: fp16
+      mp_param_dtype: fp16
+    offload:
+      offload_params: true
+      offload_optimizer: true
+
+  rollout:
+    n: 4
+    temperature: 1.0
+    top_p: 1.0
+    dtype: fp16
+    tensor_parallel_size: 1
+    gpu_memory_utilization: 0.5
+    enforce_eager: false
+    enable_chunked_prefill: false
+    disable_tqdm: false
+
+  ref:
+    fsdp:
+      enable_full_shard: true
+      enable_cpu_offload: true
+      enable_rank0_init: true
+      torch_dtype: fp16
+      mp_param_dtype: fp16
+    offload:
+      offload_params: false
+
+  reward:
+    reward_function: ./examples/reward_function/math.py:compute_score
+
+trainer:
+  total_epochs: 1
+  max_steps: null
+  project_name: easy_r1
+  experiment_name: qwen3_4b_gsm8k_lears
+  logger: ["file", "wandb"]
+  nnodes: 1
+  n_gpus_per_node: 1
+  max_try_make_batch: 20
+  critic_warmup: 0
+  val_freq: -1
+  val_before_train: false
+  val_only: false
+  val_generations_to_log: 0
+  save_freq: 50
+  save_limit: 3
+  save_model_only: false
+  save_checkpoint_path: null
+  load_checkpoint_path: null
+  find_last_checkpoint: true
+
+research:
+  enabled: true
+  checkpoint_subdir: research
+  latent:
+    source: actor_logprob
+    layer_index: -1
+    include_prompt: false
+    dtype: fp16
+    capture_every_n_steps: 1
+  buffer:
+    backend: parquet
+    dir: null
+    shard_max_samples: 512
+    compression: zstd
+    max_disk_gb: 100.0
+    max_train_samples: 50000
+  ar:
+    model_type: tiny_transformer
+    d_model: 256
+    n_layers: 2
+    n_heads: 4
+    dropout: 0.1
+    lr: 1.0e-4
+    batch_size: 16
+    train_steps: 100
+    train_every_n_steps: 20
+    min_buffer_samples: 64
+    device: cpu
+    max_seq_len: 1024
+    num_workers: 0
+  intrinsic:
+    mode: weighted_additive
+    outcome_gated: true
+    success_threshold: 0.0
+    lambda_success: 0.1
+    lambda_failure: 0.1
+    normalize: running_zscore
+    clip_value: 5.0
+    token_mode: dense

@@ -23,7 +23,7 @@ from collections import defaultdict
 from copy import deepcopy
 from dataclasses import dataclass, field
 from enum import IntEnum, auto
-from typing import Any, Optional, Type
+from typing import TYPE_CHECKING, Any, Optional, Type
 
 import numpy as np
 import ray
@@ -59,6 +59,9 @@ from .metrics import (
     compute_timing_metrics,
     reduce_metrics,
 )
+
+if TYPE_CHECKING:
+    from research.manager import LeaRSManager
 
 
 class Role(IntEnum):
@@ -184,6 +187,7 @@ class RayPPOTrainer:
         self.val_reward_score = 0.0
         self.best_val_reward_score = -1.0
         self.best_global_step = None
+        self.lears_manager: Optional["LeaRSManager"] = None
 
         self.hybrid_engine = config.worker.hybrid_engine
         self.role_worker_mapping = role_worker_mapping
@@ -246,6 +250,11 @@ class RayPPOTrainer:
         config.worker.actor.optim.training_steps = self.training_steps
         config.worker.critic.optim.training_steps = self.training_steps
         print(f"Total training steps: {self.training_steps}")
+
+        if config.research.enabled:
+            from research.manager import LeaRSManager
+
+            self.lears_manager = LeaRSManager(config=config.research, checkpoint_root=config.trainer.save_checkpoint_path)
 
     def init_workers(self) -> None:
         """Init resource pool and worker group"""
@@ -579,6 +588,8 @@ class RayPPOTrainer:
             val_metrics = self._validate()
             self.logger.log(data=val_metrics, step=self.global_step)
             if self.config.trainer.val_only:
+                if self.lears_manager is not None:
+                    self.lears_manager.close()
                 return
 
         self.data_iterator = iter(self.train_dataloader)
@@ -608,6 +619,8 @@ class RayPPOTrainer:
 
                 # recompute old_log_probs
                 with timer("old", timing_raw):
+                    if self.lears_manager is not None:
+                        batch.meta_info.update(self.lears_manager.build_capture_meta(self.global_step))
                     old_log_probs = self.actor_rollout_ref_wg.compute_log_probs(batch)
                     batch = batch.union(old_log_probs)
 
@@ -630,6 +643,20 @@ class RayPPOTrainer:
                         batch.batch["token_level_scores"] = reward_tensor
                         reward_metrics = {f"reward/{k}": v for k, v in reduce_metrics(reward_metrics).items()}
                         metrics.update(reward_metrics)
+
+                    if self.lears_manager is not None:
+                        extrinsic_scores = batch.batch["token_level_scores"]
+                        intrinsic_scores, intrinsic_metrics = self.lears_manager.collect_and_score(
+                            batch=batch,
+                            extrinsic_scores=extrinsic_scores,
+                            global_step=self.global_step,
+                        )
+                        intrinsic_scores = intrinsic_scores.to(
+                            device=extrinsic_scores.device,
+                            dtype=extrinsic_scores.dtype,
+                        )
+                        batch.batch["token_level_scores"] = extrinsic_scores + intrinsic_scores
+                        metrics.update(intrinsic_metrics)
 
                     # apply kl penalty if available
                     if not self.config.algorithm.use_kl_loss and self.use_reference_policy:
@@ -701,3 +728,5 @@ class RayPPOTrainer:
 
         if self.config.trainer.save_freq <= 0 or self.global_step % self.config.trainer.save_freq != 0:
             self._save_checkpoint()
+        if self.lears_manager is not None:
+            self.lears_manager.close()

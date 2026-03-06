@@ -12,5 +12,10 @@ python3 -m verl.trainer.main \
     worker.actor.model.lora.alpha=64 \
     worker.actor.optim.lr=1e-5 \
     worker.rollout.tensor_parallel_size=1 \
+    worker.rollout.dtype=fp16 \
+    worker.actor.fsdp.torch_dtype=fp16 \
+    worker.actor.fsdp.mp_param_dtype=fp16 \
+    worker.ref.fsdp.torch_dtype=fp16 \
+    worker.ref.fsdp.mp_param_dtype=fp16 \
     trainer.experiment_name=qwen3_4b_math_grpo_lora \
     trainer.n_gpus_per_node=1

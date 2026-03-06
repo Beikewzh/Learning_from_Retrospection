@@ -19,6 +19,8 @@ import os
 from dataclasses import asdict, dataclass, field, fields, is_dataclass
 from typing import Optional, Tuple
 
+from research.config import ResearchConfig
+
 from ..utils.py_functional import get_abs_path
 from ..workers.config import WorkerConfig
 
@@ -151,6 +153,7 @@ class PPOConfig:
     worker: WorkerConfig = field(default_factory=WorkerConfig)
     algorithm: AlgorithmConfig = field(default_factory=AlgorithmConfig)
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
+    research: ResearchConfig = field(default_factory=ResearchConfig)
 
     def post_init(self):
         self.worker.rollout.prompt_length = self.data.max_prompt_length

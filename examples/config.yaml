@@ -108,3 +108,43 @@ trainer:
   save_checkpoint_path: null
   load_checkpoint_path: null
   find_last_checkpoint: true
+
+# research:
+#   enabled: false
+#   checkpoint_subdir: research
+#   latent:
+#     source: actor_logprob
+#     layer_index: -1
+#     include_prompt: false
+#     dtype: fp16
+#     capture_every_n_steps: 1
+#   buffer:
+#     backend: parquet
+#     dir: null  # defaults to ${trainer.save_checkpoint_path}/research
+#     shard_max_samples: 1024
+#     compression: zstd
+#     max_disk_gb: 200
+#     max_train_samples: 100000
+#   ar:
+#     model_type: tiny_transformer
+#     d_model: 256
+#     n_layers: 4
+#     n_heads: 8
+#     dropout: 0.1
+#     lr: 1.0e-4
+#     batch_size: 16
+#     train_steps: 200
+#     train_every_n_steps: 50
+#     min_buffer_samples: 256
+#     device: cpu
+#     max_seq_len: 2048
+#     num_workers: 0
+#   intrinsic:
+#     mode: weighted_additive
+#     outcome_gated: true
+#     success_threshold: 0.0
+#     lambda_success: 0.1
+#     lambda_failure: 0.1
+#     normalize: running_zscore
+#     clip_value: 5.0
+#     token_mode: dense

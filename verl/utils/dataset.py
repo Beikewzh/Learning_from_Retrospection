@@ -31,6 +31,34 @@ from transformers import PreTrainedTokenizer, ProcessorMixin
 from . import torch_functional as VF
 
 
+def parse_dataset_path(data_path: str) -> tuple[str, Optional[str], str]:
+    """Parse dataset identifier into `(path, config_name, split)`.
+
+    Supported forms:
+    - `dataset@split`
+    - `dataset:config@split`
+    - `dataset#config@split`
+    - local file/dir paths (config suffix parsing is skipped if path exists)
+    """
+    path_with_cfg = data_path
+    if "@" in path_with_cfg:
+        path_with_cfg, data_split = path_with_cfg.rsplit("@", 1)
+    else:
+        data_split = "train"
+
+    config_name = None
+    if not os.path.isdir(path_with_cfg) and not os.path.isfile(path_with_cfg):
+        for sep in (":", "#"):
+            if sep in path_with_cfg:
+                maybe_path, maybe_config = path_with_cfg.rsplit(sep, 1)
+                if maybe_path and maybe_config:
+                    path_with_cfg = maybe_path
+                    config_name = maybe_config
+                break
+
+    return path_with_cfg, config_name, data_split
+
+
 def collate_fn(features: list[dict[str, Any]]) -> dict[str, Any]:
     tensors = defaultdict(list)
     non_tensors = defaultdict(list)
@@ -121,10 +149,7 @@ class RLHFDataset(Dataset):
         self.min_pixels = min_pixels
         self.max_pixels = max_pixels
 
-        if "@" in data_path:
-            data_path, data_split = data_path.split("@")
-        else:
-            data_split = "train"
+        data_path, data_config, data_split = parse_dataset_path(data_path)
 
         if os.path.isdir(data_path):
             # when we use dataset builder, we should always refer to the train split
@@ -135,7 +160,7 @@ class RLHFDataset(Dataset):
             self.dataset = load_dataset(file_type, data_files=data_path, split=data_split)
         else:
             # load remote dataset from huggingface hub
-            self.dataset = load_dataset(data_path, split=data_split)
+            self.dataset = load_dataset(data_path, name=data_config, split=data_split)
 
         self.format_prompt = None
         if format_prompt:

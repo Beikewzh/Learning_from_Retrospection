@@ -17,7 +17,7 @@ Implement Actor
 
 import os
 from collections import defaultdict
-from typing import Any, Optional
+from typing import Any, Optional, Union
 
 import torch
 import torch.distributed as dist
@@ -34,6 +34,7 @@ from ...utils.seqlen_balancing import prepare_dynamic_batch, restore_dynamic_bat
 from ...utils.ulysses import gather_outputs_and_unpad, ulysses_pad_and_slice_inputs
 from .base import BasePPOActor
 from .config import ActorConfig
+from research.latent.extractor import cast_latent_dtype, select_hidden_from_output, slice_latent_tokens
 
 
 try:
@@ -65,7 +66,15 @@ class DataParallelPPOActor(BasePPOActor):
         else:
             self.log_probs_from_logits = VF.log_probs_from_logits
 
-    def _forward_micro_batch(self, micro_batch: dict[str, torch.Tensor], temperature: float) -> torch.Tensor:
+    def _forward_micro_batch(
+        self,
+        micro_batch: dict[str, torch.Tensor],
+        temperature: float,
+        return_latents: bool = False,
+        latent_layer_index: int = -1,
+        latent_include_prompt: bool = False,
+        latent_dtype: str = "fp16",
+    ) -> Union[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
         """
         Returns:
             log_probs: # (bs, response_len)
@@ -123,6 +132,8 @@ class DataParallelPPOActor(BasePPOActor):
                 position_ids=position_ids_rmpad,
                 **multi_modal_inputs,
                 use_cache=False,
+                output_hidden_states=return_latents,
+                return_dict=True,
             )  # prevent model thinks we are generating
             logits_rmpad = output.logits.squeeze(0)  # (total_nnz, vocab_size)
             logits_rmpad.div_(temperature)
@@ -139,6 +150,24 @@ class DataParallelPPOActor(BasePPOActor):
                 hidden_states=log_probs.unsqueeze(-1), indices=indices, batch=batch_size, seqlen=seqlen
             )
             log_probs = full_log_probs.squeeze(-1)[:, -response_length - 1 : -1]  # (bsz, response_length)
+
+            if return_latents:
+                latents_rmpad = select_hidden_from_output(output=output, layer_index=latent_layer_index)
+                if latents_rmpad.ndim == 3 and latents_rmpad.size(0) == 1:
+                    latents_rmpad = latents_rmpad.squeeze(0)
+                elif latents_rmpad.ndim != 2:
+                    raise RuntimeError(f"Unexpected latent shape in padding-free path: {tuple(latents_rmpad.shape)}")
+
+                if self.config.ulysses_size > 1:
+                    latents_rmpad = gather_outputs_and_unpad(
+                        latents_rmpad, gather_dim=0, unpad_dim=0, padding_size=pad_size
+                    )
+
+                full_latents = pad_input(hidden_states=latents_rmpad, indices=indices, batch=batch_size, seqlen=seqlen)
+                latents = slice_latent_tokens(
+                    full_latents, response_length=response_length, include_prompt=latent_include_prompt
+                )
+                latents = cast_latent_dtype(latents, precision=latent_dtype)
         else:
             output = self.actor_module(
                 input_ids=input_ids,
@@ -146,12 +175,22 @@ class DataParallelPPOActor(BasePPOActor):
                 position_ids=position_ids,
                 **multi_modal_inputs,
                 use_cache=False,
+                output_hidden_states=return_latents,
+                return_dict=True,
             )
             logits: torch.Tensor = output.logits
             logits.div_(temperature)
             logits = logits[:, -response_length - 1 : -1, :]  # (bsz, response_length, vocab_size)
             log_probs = self.log_probs_from_logits(logits, responses)  # (bsz, response_length)
+            if return_latents:
+                full_latents = select_hidden_from_output(output=output, layer_index=latent_layer_index)
+                latents = slice_latent_tokens(
+                    full_latents, response_length=response_length, include_prompt=latent_include_prompt
+                )
+                latents = cast_latent_dtype(latents, precision=latent_dtype)
 
+        if return_latents:
+            return log_probs, latents
         return log_probs
 
     def _optimizer_step(self) -> torch.Tensor:
@@ -169,7 +208,7 @@ class DataParallelPPOActor(BasePPOActor):
         return grad_norm
 
     @torch.no_grad()
-    def compute_log_prob(self, data: DataProto) -> torch.Tensor:
+    def compute_log_prob(self, data: DataProto) -> Union[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
         """Compute the log probability of the responses given input_ids, attention_mask and position_ids
 
         Args:
@@ -190,6 +229,10 @@ class DataParallelPPOActor(BasePPOActor):
         self.actor_module.eval()
 
         temperature = data.meta_info["temperature"]
+        capture_latent = bool(data.meta_info.get("capture_latent", False))
+        latent_layer_index = int(data.meta_info.get("latent_layer_index", -1))
+        latent_include_prompt = bool(data.meta_info.get("latent_include_prompt", False))
+        latent_dtype = str(data.meta_info.get("latent_dtype", "fp16"))
         select_keys = ["input_ids", "attention_mask", "position_ids", "responses"]
         non_tensor_select_keys = ["multi_modal_inputs"]
 
@@ -201,19 +244,37 @@ class DataParallelPPOActor(BasePPOActor):
             micro_batches = data.split(self.config.micro_batch_size_per_device_for_experience)
 
         log_probs_lst = []
+        latents_lst = [] if capture_latent else None
         if self.rank == 0:
             micro_batches = tqdm(micro_batches, desc="Compute log probs", position=1)
 
         for micro_batch in micro_batches:
             model_inputs = {**micro_batch.batch, **micro_batch.non_tensor_batch}
-            log_probs = self._forward_micro_batch(model_inputs, temperature=temperature)
+            output = self._forward_micro_batch(
+                model_inputs,
+                temperature=temperature,
+                return_latents=capture_latent,
+                latent_layer_index=latent_layer_index,
+                latent_include_prompt=latent_include_prompt,
+                latent_dtype=latent_dtype,
+            )
+            if capture_latent:
+                log_probs, latents = output
+                latents_lst.append(latents)
+            else:
+                log_probs = output
             log_probs_lst.append(log_probs)
 
         log_probs = torch.concat(log_probs_lst, dim=0)
+        latents = torch.concat(latents_lst, dim=0) if capture_latent else None
 
         if self.config.dynamic_batching:
             log_probs = restore_dynamic_batch(log_probs, batch_idx_list)
+            if capture_latent:
+                latents = restore_dynamic_batch(latents, batch_idx_list)
 
+        if capture_latent:
+            return log_probs, latents
         return log_probs
 
     def update_policy(self, data: DataProto) -> dict[str, Any]:
