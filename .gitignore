@@ -180,6 +180,7 @@ outputs/
 checkpoints/
 wandb/
 tensorboard_log/
+slurm_logs/
 
 # data
 images/

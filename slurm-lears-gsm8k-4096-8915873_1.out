@@ -1,5 +1,0 @@
-mkdir: cannot create directory ‘/var/spool/checkpoints’: Permission denied
-/etc/slurm/slurmtask_epilog: line 26: ${OUT_FILE}: ambiguous redirect
-/etc/slurm/slurmtask_epilog: line 27: ${OUT_FILE}: ambiguous redirect
-/etc/slurm/slurmtask_epilog: line 28: ${OUT_FILE}: ambiguous redirect
-[2026-03-09T23:24:47.164] error: --task-epilog failed status=1
