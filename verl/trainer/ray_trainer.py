@@ -716,12 +716,8 @@ class RayPPOTrainer:
             main_tqdm.update()
 
         # perform validation after training
-        if self.val_reward_fn is not None:
-            if (
-                val_metrics is None
-                or self.config.trainer.val_freq <= 0
-                or self.global_step % self.config.trainer.val_freq != 0
-            ):
+        if self.val_reward_fn is not None and self.config.trainer.val_freq > 0:
+            if val_metrics is None or self.global_step % self.config.trainer.val_freq != 0:
                 val_metrics = self._validate()
                 self.logger.log(data=val_metrics, step=self.global_step)
 

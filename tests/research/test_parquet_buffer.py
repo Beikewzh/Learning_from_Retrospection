@@ -49,3 +49,35 @@ def test_parquet_buffer_append_and_read(tmp_path):
     assert len(seqs) == 2
     assert all(s.ndim == 2 for s in seqs)
     assert sorted([s.shape[0] for s in seqs]) == [4, 5]
+
+
+def test_parquet_buffer_load_sequences_with_step_window(tmp_path):
+    buffer = ParquetLatentBuffer(
+        root_dir=str(tmp_path),
+        shard_max_samples=8,
+        compression="zstd",
+        max_disk_gb=1.0,
+    )
+
+    for step in (10, 20, 30):
+        latents = torch.randn(1, 4, 4)
+        response_lengths = torch.tensor([4])
+        extrinsic = torch.tensor([1.0])
+        success = torch.tensor([True])
+        buffer.append_batch(
+            uids=[f"uid-{step}"],
+            step=step,
+            latents=latents,
+            response_lengths=response_lengths,
+            extrinsic_final=extrinsic,
+            success=success,
+            dtype="fp16",
+        )
+    buffer.flush()
+
+    mid = buffer.load_sequences(max_samples=16, seed=0, min_step=15, max_step=25)
+    assert len(mid) == 1
+    assert mid[0].shape[0] == 4
+
+    none = buffer.load_sequences(max_samples=16, seed=0, min_step=31, max_step=40)
+    assert none == []

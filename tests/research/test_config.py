@@ -14,10 +14,40 @@
 
 import pytest
 
-from research.config import LatentConfig
+from research.config import ARConfig, LatentConfig
 
 
 def test_latent_include_prompt_guard():
     cfg = LatentConfig(include_prompt=True)
     with pytest.raises(ValueError, match="include_prompt"):
+        cfg.post_init()
+
+
+def test_ar_window_intervals_must_be_non_negative():
+    cfg = ARConfig(window_intervals=-1)
+    with pytest.raises(ValueError, match="window_intervals"):
+        cfg.post_init()
+
+
+def test_ar_window_interval_steps_requires_positive_when_set():
+    cfg = ARConfig(window_interval_steps=0)
+    with pytest.raises(ValueError, match="window_interval_steps"):
+        cfg.post_init()
+
+
+def test_ar_max_age_steps_requires_positive_when_set():
+    cfg = ARConfig(max_age_steps=0)
+    with pytest.raises(ValueError, match="max_age_steps"):
+        cfg.post_init()
+
+
+def test_ar_start_after_steps_requires_non_negative():
+    cfg = ARConfig(start_after_steps=-1)
+    with pytest.raises(ValueError, match="start_after_steps"):
+        cfg.post_init()
+
+
+def test_ar_stale_action_must_be_valid():
+    cfg = ARConfig(stale_action="panic")
+    with pytest.raises(ValueError, match="stale_action"):
         cfg.post_init()

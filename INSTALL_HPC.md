@@ -1,53 +1,136 @@
-# EasyR1 on HPC (no Docker): use Singularity / Apptainer
+# EasyR1 + LeaRS on HPC (Singularity/Apptainer)
 
-On Mila HPC you have **Singularity** (same as Apptainer). Use it like this.
+This repo is designed to run with the Docker image:
 
-## If you get "disk quota exceeded" when pulling
+- `hiyouga/verl:ngc-th2.8.0-cu12.9-vllm0.11.0`
 
-Singularity uses your **home directory** for cache by default; home often has a small quota. Use **scratch** for cache and temp:
+On Mila/CC, run it via Singularity or Apptainer.
 
-```bash
-export SINGULARITY_CACHEDIR=/home/mila/z/zihan.wang/scratch/.singularity_cache
-export SINGULARITY_TMPDIR=/home/mila/z/zihan.wang/scratch/.singularity_tmp
-mkdir -p $SINGULARITY_CACHEDIR $SINGULARITY_TMPDIR
-```
-
-Then run the pull (and keep these set when you run `singularity shell` / `exec` later).
-
-## 1. Load Singularity and pull the image
+## 1. Pull image to SIF
 
 ```bash
 module load singularity/3.7.1
 
-# Use scratch for cache/tmp to avoid home quota (see above)
 export SINGULARITY_CACHEDIR=/home/mila/z/zihan.wang/scratch/.singularity_cache
 export SINGULARITY_TMPDIR=/home/mila/z/zihan.wang/scratch/.singularity_tmp
-mkdir -p $SINGULARITY_CACHEDIR $SINGULARITY_TMPDIR
+mkdir -p "$SINGULARITY_CACHEDIR" "$SINGULARITY_TMPDIR"
 
 cd /home/mila/z/zihan.wang/scratch/Learning_from_Retrospection
 singularity pull easyr1.sif docker://hiyouga/verl:ngc-th2.8.0-cu12.9-vllm0.11.0
 ```
 
-## 2. Run a shell inside the container (GPU + bind your dir)
-
-Bind your scratch so you can see the repo and data inside the container. Use your real path:
+## 2. Interactive shell
 
 ```bash
-singularity shell --nv --cleanenv --bind /home/mila/z/zihan.wang/scratch/Learning_from_Retrospection:/workspace easyr1.sif
+singularity shell --nv --cleanenv \
+  --bind /home/mila/z/zihan.wang/scratch/Learning_from_Retrospection:/workspace \
+  easyr1.sif
 cd /workspace
 ```
 
+If your cluster exposes `apptainer` instead of `singularity`, replace the binary name.
 
-Inside the container, your project is at `/workspace`. Run training from there.
+## 3. Canonical LeaRS scripts
 
-## 3. Or run a command directly
+- full online training: `scripts/slurm/lears_full_train.sbatch`
+- online sweep: `scripts/slurm/lears_sweep.sbatch`
+- quick interactive smoke: `scripts/lears_smoke_1gpu.sh`
+
+Legacy aliases still exist:
+
+- `scripts/slurm/lears_gsm8k_full_train.sbatch`
+- `scripts/slurm/lears_gsm8k_sweep.sbatch`
+
+## 4. Mila examples
+
+1x8 full run:
 
 ```bash
-singularity exec --nv --cleanenv --bind /home/mila/z/zihan.wang/scratch/Learning_from_Retrospection:/workspace easyr1.sif bash examples/qwen2_5_vl_7b_geo3k_grpo.sh
+sbatch scripts/slurm/lears_full_train.sbatch
 ```
 
-- `--nv`: use NVIDIA GPUs  
-- `--cleanenv`: don’t inherit host env (avoids conflicts)  
-- `--bind LOCAL:CONTAINER`: mount your dir (use your paths)
+1x1 dry-run preflight:
 
-If your cluster uses `apptainer` instead of `singularity`, replace `singularity` with `apptainer` in the commands above.
+```bash
+DRY_RUN=1 TRAINER_NNODES=1 TRAINER_N_GPUS_PER_NODE=1 \
+SCHEDULE_MODE=step TOTAL_STEPS=4 WARMUP_STEPS=1 REFRESH_INTERVAL=1 \
+sbatch --nodes=1 --gres=gpu:a100l:1 --cpus-per-task=16 --mem=120G --time=0-01:00 \
+  scripts/slurm/lears_full_train.sbatch
+```
+
+2x4 full run:
+
+```bash
+TRAINER_NNODES=2 TRAINER_N_GPUS_PER_NODE=4 \
+sbatch --nodes=2 --gres=gpu:a100l:4 scripts/slurm/lears_full_train.sbatch
+```
+
+1-GPU interactive smoke (5-minute sanity path):
+
+```bash
+ENABLE_WANDB=1 TOTAL_STEPS=4 WARMUP_STEPS=1 AR_TRAIN_EVERY_N_STEPS=1 \
+AR_TRAIN_STEPS=1 AR_MIN_BUFFER_SAMPLES=1 AR_BATCH_SIZE=1 \
+ROLLOUT_BATCH_SIZE=1 ACTOR_GLOBAL_BATCH_SIZE=1 ROLLOUT_N=2 \
+MAX_PROMPT_LENGTH=128 MAX_RESPONSE_LENGTH=128 \
+bash scripts/lears_smoke_1gpu.sh
+```
+
+## 5. Compute Canada templates
+
+Set site-specific account/partition/GPU flags explicitly.
+
+1x8 template:
+
+```bash
+sbatch \
+  --account=<cc_account> \
+  --partition=<cc_partition> \
+  --nodes=1 \
+  --gres=gpu:<gpu_type>:8 \
+  --cpus-per-task=<cpus> \
+  --mem=<mem> \
+  --time=<walltime> \
+  scripts/slurm/lears_full_train.sbatch
+```
+
+2x4 template:
+
+```bash
+TRAINER_NNODES=2 TRAINER_N_GPUS_PER_NODE=4 \
+sbatch \
+  --account=<cc_account> \
+  --partition=<cc_partition> \
+  --nodes=2 \
+  --gres=gpu:<gpu_type>:4 \
+  --cpus-per-task=<cpus> \
+  --mem=<mem> \
+  --time=<walltime> \
+  scripts/slurm/lears_full_train.sbatch
+```
+
+If your CC site prefers `--gpus-per-node` over `--gres`, swap the resource flag accordingly.
+
+## 6. W&B defaults
+
+Scripts use:
+
+```bash
+WANDB_PROJECT_NAME="${WANDB_PROJECT_NAME:-COMP767}"
+WANDB_ENTITY="${WANDB_ENTITY:-zihan-wang-beike-mcgill-university}"
+```
+
+If runs appear empty, verify `WANDB_API_KEY` is available in the runtime.
+
+## 7. Resume and logs
+
+Resume an existing run by reusing `RUN_ID`:
+
+```bash
+RUN_ID=<existing_run_id> sbatch scripts/slurm/lears_full_train.sbatch
+```
+
+Slurm logs are written to:
+
+- `slurm_logs/slurm-<jobname>-<jobid>.out`
+- `slurm_logs/slurm-<jobname>-<arrayjob>_<task>.out`
+

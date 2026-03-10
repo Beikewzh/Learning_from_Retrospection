@@ -78,10 +78,15 @@ class ARConfig:
     batch_size: int = 16
     train_steps: int = 200
     train_every_n_steps: int = 50
+    start_after_steps: int = 0
     min_buffer_samples: int = 256
     device: str = "cpu"
     max_seq_len: int = 2048
     num_workers: int = 0
+    window_intervals: int = 0
+    window_interval_steps: Optional[int] = None
+    max_age_steps: Optional[int] = None
+    stale_action: str = "warn"
 
     def post_init(self):
         if self.model_type not in {"tiny_transformer"}:
@@ -94,10 +99,20 @@ class ARConfig:
             raise ValueError("ar.{batch_size,train_steps} must be > 0")
         if self.train_every_n_steps <= 0:
             raise ValueError("ar.train_every_n_steps must be > 0")
+        if self.start_after_steps < 0:
+            raise ValueError("ar.start_after_steps must be >= 0")
         if self.min_buffer_samples <= 0:
             raise ValueError("ar.min_buffer_samples must be > 0")
         if self.max_seq_len <= 1:
             raise ValueError("ar.max_seq_len must be > 1")
+        if self.window_intervals < 0:
+            raise ValueError("ar.window_intervals must be >= 0")
+        if self.window_interval_steps is not None and self.window_interval_steps <= 0:
+            raise ValueError("ar.window_interval_steps must be > 0 when set")
+        if self.max_age_steps is not None and self.max_age_steps <= 0:
+            raise ValueError("ar.max_age_steps must be > 0 when set")
+        if self.stale_action not in {"warn", "fail"}:
+            raise ValueError("ar.stale_action must be one of {'warn', 'fail'}")
 
 
 @dataclass

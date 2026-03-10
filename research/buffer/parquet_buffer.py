@@ -212,8 +212,20 @@ class ParquetLatentBuffer:
                     "latent_blob": data["latent_blob"][i],
                 }
 
-    def load_sequences(self, max_samples: int, seed: int = 0) -> list[torch.Tensor]:
+    def load_sequences(
+        self,
+        max_samples: int,
+        seed: int = 0,
+        min_step: int | None = None,
+        max_step: int | None = None,
+    ) -> list[torch.Tensor]:
         rows = list(self.iter_rows())
+        if not rows:
+            return []
+        if min_step is not None:
+            rows = [row for row in rows if int(row["step"]) >= int(min_step)]
+        if max_step is not None:
+            rows = [row for row in rows if int(row["step"]) <= int(max_step)]
         if not rows:
             return []
         rng = random.Random(seed)

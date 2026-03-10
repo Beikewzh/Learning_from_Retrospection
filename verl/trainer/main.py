@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import json
+import os
 
 import ray
 from omegaconf import OmegaConf
@@ -112,7 +113,12 @@ def main():
                 "VLLM_ALLREDUCE_USE_SYMM_MEM": "0",
             }
         }
-        ray.init(runtime_env=runtime_env)
+        ray_address = os.environ.get("RAY_ADDRESS", "").strip()
+        if ray_address:
+            print(f"Connecting to Ray cluster at {ray_address}")
+            ray.init(address=ray_address, runtime_env=runtime_env)
+        else:
+            ray.init(runtime_env=runtime_env)
 
     runner = Runner.remote()
     ray.get(runner.run.remote(ppo_config))

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import warnings
 from dataclasses import asdict
 from typing import Any, Optional
 
@@ -57,6 +58,8 @@ class LeaRSManager:
         self.running_stats = RunningZScore()
 
         self.last_train_step = 0
+        self.last_attempt_step = -1
+        self.first_train_step = -1
         self._scorer: Optional[ARScorer] = None
         self._load_state()
         self._try_load_latest_scorer()
@@ -75,6 +78,8 @@ class LeaRSManager:
         with open(self.state_path, encoding="utf-8") as f:
             state = json.load(f)
         self.last_train_step = int(state.get("last_train_step", 0))
+        self.last_attempt_step = int(state.get("last_attempt_step", -1))
+        self.first_train_step = int(state.get("first_train_step", -1))
         stats = state.get("running_stats", {})
         self.running_stats.count = int(stats.get("count", 0))
         self.running_stats.mean = float(stats.get("mean", 0.0))
@@ -83,6 +88,8 @@ class LeaRSManager:
     def _save_state(self) -> None:
         state = {
             "last_train_step": self.last_train_step,
+            "last_attempt_step": self.last_attempt_step,
+            "first_train_step": self.first_train_step,
             "running_stats": {
                 "count": self.running_stats.count,
                 "mean": self.running_stats.mean,
@@ -107,28 +114,86 @@ class LeaRSManager:
             "latent_dtype": self.config.latent.dtype,
         }
 
-    def maybe_train_ar(self, global_step: int) -> dict[str, Any]:
-        if not self.enabled:
-            return {}
-        if (global_step - self.last_train_step) < self.config.ar.train_every_n_steps:
-            return {}
+    def _base_ar_metrics(self) -> dict[str, float]:
+        return {
+            "research/ar/attempted": 0.0,
+            "research/ar/trained": 0.0,
+            "research/ar/skipped": 0.0,
+            "research/ar/skip_cadence": 0.0,
+            "research/ar/skip_warmup": 0.0,
+            "research/ar/skip_insufficient_samples": 0.0,
+            "research/ar/window_intervals": float(self.config.ar.window_intervals),
+            "research/ar/window_min_step": 0.0,
+            "research/ar/windowed_samples": 0.0,
+            "research/ar/last_attempt_step": float(self.last_attempt_step),
+            "research/ar/last_train_step": float(self.last_train_step),
+            "research/ar/first_train_step": float(self.first_train_step),
+            "research/ar/start_after_steps": float(self.config.ar.start_after_steps),
+            "research/ar/train_every_n_steps": float(self.config.ar.train_every_n_steps),
+        }
 
-        sequences = self.buffer.load_sequences(max_samples=self.config.buffer.max_train_samples, seed=global_step)
+    def maybe_train_ar(self, global_step: int) -> dict[str, Any]:
+        metrics = self._base_ar_metrics()
+        if not self.enabled:
+            return metrics
+
+        if global_step < self.config.ar.start_after_steps:
+            metrics["research/ar/skipped"] = 1.0
+            metrics["research/ar/skip_warmup"] = 1.0
+            return metrics
+
+        # Attempt on deterministic cadence: start_after_steps, start_after_steps + k * train_every_n_steps.
+        if (global_step - self.config.ar.start_after_steps) % self.config.ar.train_every_n_steps != 0:
+            metrics["research/ar/skipped"] = 1.0
+            metrics["research/ar/skip_cadence"] = 1.0
+            return metrics
+
+        # Avoid duplicate attempt bookkeeping if called repeatedly at the same step.
+        if global_step == self.last_attempt_step:
+            metrics["research/ar/skipped"] = 1.0
+            metrics["research/ar/skip_cadence"] = 1.0
+            return metrics
+
+        self.last_attempt_step = global_step
+        metrics["research/ar/attempted"] = 1.0
+        metrics["research/ar/last_attempt_step"] = float(self.last_attempt_step)
+
+        window_min_step: int | None = None
+        if self.config.ar.window_intervals > 0:
+            interval_steps = (
+                self.config.ar.window_interval_steps
+                if self.config.ar.window_interval_steps is not None
+                else self.config.ar.train_every_n_steps
+            )
+            window_span = interval_steps * self.config.ar.window_intervals
+            window_min_step = max(0, int(global_step - window_span + 1))
+
+        sequences = self.buffer.load_sequences(
+            max_samples=self.config.buffer.max_train_samples,
+            seed=global_step,
+            min_step=window_min_step,
+            max_step=global_step,
+        )
+        metrics["research/ar/window_min_step"] = float(window_min_step if window_min_step is not None else 0)
+        metrics["research/ar/windowed_samples"] = float(len(sequences))
         train_output = self.ar_trainer.train_from_sequences(sequences=sequences, global_step=global_step)
         if train_output is None:
-            return {
-                "research/ar/trained": 0.0,
-                "research/ar/skipped": 1.0,
-            }
+            metrics["research/ar/skipped"] = 1.0
+            metrics["research/ar/skip_insufficient_samples"] = 1.0
+            self._save_state()
+            return metrics
 
         self.last_train_step = global_step
+        if self.first_train_step < 0:
+            self.first_train_step = global_step
+        metrics["research/ar/trained"] = 1.0
+        metrics["research/ar/train_loss"] = float(train_output.train_loss)
+        metrics["research/ar/train_steps"] = float(train_output.steps)
+        metrics["research/ar/last_train_step"] = float(self.last_train_step)
+        metrics["research/ar/first_train_step"] = float(self.first_train_step)
         self._save_state()
         self._try_load_latest_scorer()
-        return {
-            "research/ar/trained": 1.0,
-            "research/ar/train_loss": train_output.train_loss,
-            "research/ar/train_steps": float(train_output.steps),
-        }
+        return metrics
 
     def _append_to_buffer(self, batch, extrinsic_scores: torch.Tensor, global_step: int) -> dict[str, Any]:
         if "latent_response_last" not in batch.batch:
@@ -162,12 +227,23 @@ class LeaRSManager:
         metrics.update({f"research/{k}": v for k, v in self.buffer.get_stats().items()})
         return metrics
 
-    def compute_intrinsic(self, batch, extrinsic_scores: torch.Tensor) -> tuple[torch.Tensor, dict[str, Any]]:
+    def compute_intrinsic(
+        self,
+        batch,
+        extrinsic_scores: torch.Tensor,
+        global_step: int,
+    ) -> tuple[torch.Tensor, dict[str, Any]]:
         response_mask = batch.batch["response_mask"]
         zeros = torch.zeros_like(response_mask, dtype=torch.float32)
 
         if (self._scorer is None) or ("latent_response_last" not in batch.batch):
-            return zeros, {"research/intrinsic/active": 0.0}
+            return zeros, {
+                "research/intrinsic/active": 0.0,
+                "research/ar/global_step": -1.0,
+                "research/ar/train_loss": 0.0,
+                "research/ar/age_steps": 0.0,
+                "research/ar/stale": 0.0,
+            }
 
         latents = batch.batch["latent_response_last"]
         ssl_error = self._scorer.score(latents=latents, response_mask=response_mask)
@@ -188,6 +264,18 @@ class LeaRSManager:
         metrics["research/intrinsic/active"] = 1.0
         metrics["research/ar/global_step"] = float(self._scorer.meta.global_step)
         metrics["research/ar/train_loss"] = float(self._scorer.meta.train_loss)
+        age_steps = max(0, int(global_step) - int(self._scorer.meta.global_step))
+        metrics["research/ar/age_steps"] = float(age_steps)
+        metrics["research/ar/stale"] = 0.0
+        if self.config.ar.max_age_steps is not None and age_steps > self.config.ar.max_age_steps:
+            stale_msg = (
+                f"AR scorer is stale by {age_steps} steps at global_step={global_step} "
+                f"(max_age_steps={self.config.ar.max_age_steps})."
+            )
+            metrics["research/ar/stale"] = 1.0
+            if self.config.ar.stale_action == "fail":
+                raise RuntimeError(stale_msg)
+            warnings.warn(stale_msg)
         return intrinsic.cpu(), metrics
 
     def collect_and_score(self, *, batch, extrinsic_scores: torch.Tensor, global_step: int) -> tuple[torch.Tensor, dict[str, Any]]:
@@ -197,7 +285,11 @@ class LeaRSManager:
         metrics = {}
         metrics.update(self._append_to_buffer(batch=batch, extrinsic_scores=extrinsic_scores, global_step=global_step))
         metrics.update(self.maybe_train_ar(global_step=global_step))
-        intrinsic, intrinsic_metrics = self.compute_intrinsic(batch=batch, extrinsic_scores=extrinsic_scores)
+        intrinsic, intrinsic_metrics = self.compute_intrinsic(
+            batch=batch,
+            extrinsic_scores=extrinsic_scores,
+            global_step=global_step,
+        )
         metrics.update(intrinsic_metrics)
         self._save_state()
         return intrinsic, metrics
