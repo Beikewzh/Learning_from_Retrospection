@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=lears-gsm8k-4096
-#SBATCH --partition=main
+#SBATCH --partition=long
 #SBATCH --gres=gpu:a100l:1
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=120G
@@ -15,13 +15,65 @@ WANDB_ENTITY="${WANDB_ENTITY:-zihan-wang-beike-mcgill-university}"
 export WANDB_PROJECT_NAME WANDB_ENTITY
 
 PYTHON_BIN="${PYTHON_BIN:-python3}"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+USE_SINGULARITY="${USE_SINGULARITY:-1}"
+if [[ -n "${REPO_ROOT:-}" ]]; then
+    REPO_ROOT="$(cd "${REPO_ROOT}" && pwd)"
+elif [[ -n "${SLURM_SUBMIT_DIR:-}" ]]; then
+    REPO_ROOT="$(cd "${SLURM_SUBMIT_DIR}" && pwd)"
+else
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+fi
 cd "${REPO_ROOT}"
+
+SIF_PATH="${SIF_PATH:-${REPO_ROOT}/easyr1.sif}"
+CONTAINER_BIN=""
+if [[ "${USE_SINGULARITY}" == "1" ]]; then
+    SINGULARITY_CACHEDIR="${SINGULARITY_CACHEDIR:-${HOME}/scratch/.singularity_cache}"
+    SINGULARITY_TMPDIR="${SINGULARITY_TMPDIR:-${HOME}/scratch/.singularity_tmp}"
+    export SINGULARITY_CACHEDIR SINGULARITY_TMPDIR
+    mkdir -p "${SINGULARITY_CACHEDIR}" "${SINGULARITY_TMPDIR}"
+
+    if command -v singularity >/dev/null 2>&1; then
+        CONTAINER_BIN="singularity"
+    elif command -v apptainer >/dev/null 2>&1; then
+        CONTAINER_BIN="apptainer"
+    else
+        if [[ -f /etc/profile ]]; then
+            # Some site profile scripts assume undefined vars unless nounset is disabled.
+            set +u
+            # shellcheck source=/dev/null
+            source /etc/profile >/dev/null 2>&1 || true
+            set -u
+        fi
+        if command -v module >/dev/null 2>&1; then
+            module load singularity/3.7.1 >/dev/null 2>&1 || true
+        fi
+        if command -v singularity >/dev/null 2>&1; then
+            CONTAINER_BIN="singularity"
+        elif command -v apptainer >/dev/null 2>&1; then
+            CONTAINER_BIN="apptainer"
+        fi
+    fi
+    if [[ -z "${CONTAINER_BIN}" ]]; then
+        echo "No singularity/apptainer found. Set USE_SINGULARITY=0 to run host python." >&2
+        exit 1
+    fi
+    if [[ ! -f "${SIF_PATH}" ]]; then
+        echo "Container image not found: ${SIF_PATH}" >&2
+        exit 1
+    fi
+fi
 
 BASE_CONFIG="examples/research/lears_gsm8k.yaml"
 SAVE_ROOT="${SAVE_ROOT:-${REPO_ROOT}/checkpoints/${WANDB_PROJECT_NAME}/lears_gsm8k_4096}"
 mkdir -p "${SAVE_ROOT}"
+
+# Work around a known cluster epilog parsing issue for StdOut.
+# If this marker exists, epilog skips its extra GPU-report redirection.
+if [[ -n "${SLURM_SUBMIT_DIR:-}" ]]; then
+    touch "${SLURM_SUBMIT_DIR}/.no_report" || true
+fi
 
 COMMON_ARGS=(
     "config=${BASE_CONFIG}"
@@ -44,7 +96,38 @@ COMMON_ARGS=(
 )
 
 run_train() {
-    "${PYTHON_BIN}" -m verl.trainer.main "$@"
+    run_python -m verl.trainer.main "$@"
+}
+
+run_python() {
+    if [[ "${USE_SINGULARITY}" == "1" ]]; then
+        local env_args=(
+            --env "WANDB_PROJECT_NAME=${WANDB_PROJECT_NAME}"
+            --env "WANDB_ENTITY=${WANDB_ENTITY}"
+        )
+        local pass_vars=(
+            WANDB_API_KEY HF_TOKEN HF_HOME HF_ENDPOINT HUGGINGFACE_HUB_CACHE TRANSFORMERS_CACHE
+            HTTP_PROXY HTTPS_PROXY NO_PROXY http_proxy https_proxy no_proxy
+        )
+        local var
+        for var in "${pass_vars[@]}"; do
+            if [[ -n "${!var:-}" ]]; then
+                env_args+=(--env "${var}=${!var}")
+            fi
+        done
+
+        local cmd
+        printf -v cmd '%q ' "${PYTHON_BIN}" "$@"
+        "${CONTAINER_BIN}" exec \
+            --nv \
+            --cleanenv \
+            --bind "${REPO_ROOT}:/workspace" \
+            "${env_args[@]}" \
+            "${SIF_PATH}" \
+            bash -lc "cd /workspace && ${cmd}"
+    else
+        "${PYTHON_BIN}" "$@"
+    fi
 }
 
 TASK_ID="${SLURM_ARRAY_TASK_ID}"
@@ -121,7 +204,7 @@ run_train \
     "trainer.find_last_checkpoint=true"
 
 # Phase B: train AR model offline on GPU.
-"${PYTHON_BIN}" research/scripts/train_ar_offline.py \
+run_python research/scripts/train_ar_offline.py \
     --buffer-dir "${RUN_SAVE_DIR}/research/buffer" \
     --output-dir "${RUN_SAVE_DIR}/research/ar" \
     --device cuda \
