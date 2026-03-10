@@ -65,13 +65,18 @@ def apply_intrinsic_rule(
     extrinsic_scores: torch.Tensor,
     cfg: IntrinsicConfig,
     stats: RunningZScore,
+    intrinsic_mask: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, dict[str, Any]]:
     """Transform per-token SSL error into intrinsic reward tensor [B, T]."""
-    mask = response_mask.float()
+    response_mask_f = response_mask.float()
+    if intrinsic_mask is None:
+        intrinsic_mask_f = response_mask_f
+    else:
+        intrinsic_mask_f = intrinsic_mask.float()
     normalized = _normalize(ssl_error, cfg=cfg, stats=stats)
 
     # Sequence-level outcome for gating uses summed extrinsic over response tokens.
-    extrinsic_final = (extrinsic_scores * mask).sum(dim=-1)
+    extrinsic_final = (extrinsic_scores * response_mask_f).sum(dim=-1)
     success = extrinsic_final > cfg.success_threshold
 
     if cfg.outcome_gated:
@@ -86,23 +91,39 @@ def apply_intrinsic_rule(
     if cfg.token_mode == "dense":
         intrinsic = normalized * signed_scale.unsqueeze(-1)
     elif cfg.token_mode == "last_token":
-        seq_signal = (normalized * mask).sum(dim=-1) / mask.sum(dim=-1).clamp_min(1.0)
+        seq_signal = (normalized * intrinsic_mask_f).sum(dim=-1) / intrinsic_mask_f.sum(dim=-1).clamp_min(1.0)
         intrinsic = torch.zeros_like(normalized)
-        lengths = mask.sum(dim=-1).long().clamp_min(1)
+        lengths = response_mask_f.sum(dim=-1).long().clamp_min(1)
         last_idx = lengths - 1
         intrinsic[torch.arange(intrinsic.size(0)), last_idx] = seq_signal * signed_scale
     else:
         raise ValueError(f"Unsupported intrinsic token_mode: {cfg.token_mode}")
 
     intrinsic = torch.clamp(intrinsic, min=-cfg.clip_value, max=cfg.clip_value)
-    intrinsic = intrinsic * mask
+    intrinsic = intrinsic * intrinsic_mask_f
+
+    metric_mask = intrinsic_mask_f.bool()
+    if metric_mask.any():
+        z_vals = normalized[metric_mask]
+        intrinsic_vals = intrinsic[metric_mask]
+        intrinsic_mean = intrinsic_vals.mean().item()
+        intrinsic_max = intrinsic_vals.max().item()
+        intrinsic_min = intrinsic_vals.min().item()
+        z_mean = z_vals.mean().item()
+        z_std = z_vals.std(unbiased=False).item()
+    else:
+        intrinsic_mean = 0.0
+        intrinsic_max = 0.0
+        intrinsic_min = 0.0
+        z_mean = 0.0
+        z_std = 0.0
 
     metrics = {
         "research/intrinsic/success_rate": success.float().mean().item(),
-        "research/intrinsic/mean": intrinsic.mean().item(),
-        "research/intrinsic/max": intrinsic.max().item(),
-        "research/intrinsic/min": intrinsic.min().item(),
-        "research/intrinsic/z_mean": normalized.mean().item(),
-        "research/intrinsic/z_std": normalized.std(unbiased=False).item(),
+        "research/intrinsic/mean": intrinsic_mean,
+        "research/intrinsic/max": intrinsic_max,
+        "research/intrinsic/min": intrinsic_min,
+        "research/intrinsic/z_mean": z_mean,
+        "research/intrinsic/z_std": z_std,
     }
     return intrinsic, metrics

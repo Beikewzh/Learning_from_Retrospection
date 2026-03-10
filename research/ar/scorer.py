@@ -77,12 +77,18 @@ class ARScorer:
         else:
             valid = response_mask.to(latents.device).bool()[:, 1:]
 
-        key_padding_mask = ~valid
-        pred = self.model(x, key_padding_mask=key_padding_mask)
-        error = (pred - y).pow(2).mean(dim=-1)
-
         full = torch.zeros((bsz, seq_len), device=latents.device, dtype=torch.float32)
-        full[:, 1:] = error
+        row_has_valid = valid.any(dim=-1)
+        if row_has_valid.any():
+            x_valid = x[row_has_valid]
+            y_valid = y[row_has_valid]
+            valid_mask = valid[row_has_valid]
+            key_padding_mask = ~valid_mask
+            pred = self.model(x_valid, key_padding_mask=key_padding_mask)
+            error = (pred - y_valid).pow(2).mean(dim=-1)
+            error = torch.where(valid_mask, error, torch.zeros_like(error))
+            full[row_has_valid, 1:] = error
+
         if response_mask is not None:
             full = full * response_mask.to(latents.device).float()
-        return full
+        return torch.nan_to_num(full, nan=0.0, posinf=0.0, neginf=0.0)

@@ -171,12 +171,16 @@ class LeaRSManager:
 
         latents = batch.batch["latent_response_last"]
         ssl_error = self._scorer.score(latents=latents, response_mask=response_mask)
-        masked = ssl_error[response_mask.bool()]
+        ssl_valid_mask = response_mask.bool().clone()
+        if ssl_valid_mask.size(1) > 0:
+            ssl_valid_mask[:, 0] = False
+        masked = ssl_error[ssl_valid_mask]
         self.running_stats.update(masked)
 
         intrinsic, metrics = apply_intrinsic_rule(
             ssl_error=ssl_error,
             response_mask=response_mask,
+            intrinsic_mask=ssl_valid_mask,
             extrinsic_scores=extrinsic_scores,
             cfg=self.config.intrinsic,
             stats=self.running_stats,

@@ -72,3 +72,30 @@ def test_last_token_mode_and_clipping():
     )
 
     assert torch.allclose(intrinsic, torch.tensor([[0.0, 0.0, 2.0]]))
+
+
+def test_intrinsic_mask_excludes_first_token():
+    ssl_error = torch.tensor([[5.0, 2.0, 4.0]])
+    response_mask = torch.tensor([[1, 1, 1]])
+    intrinsic_mask = torch.tensor([[0, 1, 1]])
+    extrinsic_scores = torch.tensor([[0.0, 0.0, 0.0]])
+
+    cfg = IntrinsicConfig(
+        mode="weighted_additive",
+        outcome_gated=False,
+        lambda_failure=1.0,
+        normalize="none",
+        clip_value=10.0,
+        token_mode="dense",
+    )
+    stats = RunningZScore()
+    intrinsic, _ = apply_intrinsic_rule(
+        ssl_error=ssl_error,
+        response_mask=response_mask,
+        intrinsic_mask=intrinsic_mask,
+        extrinsic_scores=extrinsic_scores,
+        cfg=cfg,
+        stats=stats,
+    )
+
+    assert torch.allclose(intrinsic, torch.tensor([[0.0, 2.0, 4.0]]))

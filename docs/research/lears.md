@@ -25,6 +25,10 @@ Use the `research.*` config namespace in YAML/CLI:
 - `research.ar.*`
 - `research.intrinsic.*`
 
+Current limitation:
+
+- `research.latent.include_prompt` must be `false`.
+
 Reference defaults are visible in:
 
 - `examples/config.yaml` (commented block)
@@ -84,6 +88,7 @@ When enabled, additional metrics are emitted with `research/` prefixes, includin
 ## Troubleshooting
 
 - If AR is not yet trained or there are not enough buffer samples, intrinsic defaults to zero.
+- `research.latent.include_prompt=true` is currently unsupported; set it to `false`.
 - For GPUs without BF16 support, set rollout/FSDP precision to FP16 in your config.
 - For pre-Ampere GPUs (e.g., RTX 8000, compute capability 7.5), disable padding-free mode (`worker.actor.padding_free=false`).
 - If disk usage grows too fast, lower `research.buffer.max_disk_gb` or `research.buffer.shard_max_samples`.

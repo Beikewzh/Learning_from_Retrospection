@@ -34,6 +34,11 @@ class LatentConfig:
             raise ValueError(f"Unsupported latent source: {self.source}")
         if self.dtype not in {"fp16", "fp32"}:
             raise ValueError(f"Unsupported latent dtype: {self.dtype}")
+        if self.include_prompt:
+            raise ValueError(
+                "research.latent.include_prompt=true is currently unsupported. "
+                "Please set research.latent.include_prompt=false."
+            )
         if self.capture_every_n_steps <= 0:
             raise ValueError("latent.capture_every_n_steps must be > 0")
 
