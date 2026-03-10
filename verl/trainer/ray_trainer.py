@@ -412,7 +412,8 @@ class RayPPOTrainer:
                 batch_keys=["input_ids", "attention_mask", "position_ids"],
                 non_tensor_batch_keys=["raw_prompt_ids", "multi_modal_data"],
             )
-            repeat_times = self.config.worker.rollout.val_override_config.get("n", 1)
+            # Keep validation batch expansion consistent with generation count when no explicit val override is set.
+            repeat_times = self.config.worker.rollout.val_override_config.get("n", self.config.worker.rollout.n)
             test_gen_batch.meta_info = self.config.worker.rollout.val_override_config
             test_gen_batch.meta_info["min_pixels"] = self.config.data.min_pixels
             test_gen_batch.meta_info["max_pixels"] = self.config.data.max_pixels

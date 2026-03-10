@@ -68,6 +68,13 @@ fi
 BASE_CONFIG="examples/research/lears_gsm8k.yaml"
 SAVE_ROOT="${SAVE_ROOT:-${REPO_ROOT}/checkpoints/${WANDB_PROJECT_NAME}/lears_gsm8k_4096}"
 mkdir -p "${SAVE_ROOT}"
+CACHE_ROOT="${CACHE_ROOT:-${REPO_ROOT}/.cache}"
+mkdir -p "${CACHE_ROOT}/huggingface/hub" "${CACHE_ROOT}/huggingface/datasets" "${CACHE_ROOT}/torch"
+
+if [[ "${USE_SINGULARITY}" == "1" && "${SAVE_ROOT}" != "${REPO_ROOT}"* ]]; then
+    echo "SAVE_ROOT must be inside REPO_ROOT when USE_SINGULARITY=1, got: ${SAVE_ROOT}" >&2
+    exit 1
+fi
 
 # Work around a known cluster epilog parsing issue for StdOut.
 # If this marker exists, epilog skips its extra GPU-report redirection.
@@ -82,6 +89,7 @@ COMMON_ARGS=(
     "data.rollout_batch_size=4"
     "worker.actor.global_batch_size=4"
     "worker.rollout.n=2"
+    "worker.rollout.val_override_config.n=2"
     "worker.actor.padding_free=false"
     "research.latent.include_prompt=false"
     "research.ar.device=cpu"
@@ -99,14 +107,29 @@ run_train() {
     run_python -m verl.trainer.main "$@"
 }
 
+to_runtime_path() {
+    local path="$1"
+    if [[ "${USE_SINGULARITY}" == "1" && "${path}" == "${REPO_ROOT}"* ]]; then
+        printf '/workspace%s' "${path#${REPO_ROOT}}"
+    else
+        printf '%s' "${path}"
+    fi
+}
+
 run_python() {
     if [[ "${USE_SINGULARITY}" == "1" ]]; then
         local env_args=(
             --env "WANDB_PROJECT_NAME=${WANDB_PROJECT_NAME}"
             --env "WANDB_ENTITY=${WANDB_ENTITY}"
+            --env "HF_HOME=/workspace/.cache/huggingface"
+            --env "HF_HUB_CACHE=/workspace/.cache/huggingface/hub"
+            --env "HUGGINGFACE_HUB_CACHE=/workspace/.cache/huggingface/hub"
+            --env "HF_DATASETS_CACHE=/workspace/.cache/huggingface/datasets"
+            --env "XDG_CACHE_HOME=/workspace/.cache"
+            --env "TORCH_HOME=/workspace/.cache/torch"
         )
         local pass_vars=(
-            WANDB_API_KEY HF_TOKEN HF_HOME HF_ENDPOINT HUGGINGFACE_HUB_CACHE TRANSFORMERS_CACHE
+            WANDB_API_KEY HF_TOKEN HF_ENDPOINT
             HTTP_PROXY HTTPS_PROXY NO_PROXY http_proxy https_proxy no_proxy
         )
         local var
@@ -174,6 +197,7 @@ esac
 RUN_ID="${VARIANT}_j${SLURM_JOB_ID}_t${TASK_ID}_${STAMP}"
 RUN_SAVE_DIR="${SAVE_ROOT}/${RUN_ID}"
 mkdir -p "${RUN_SAVE_DIR}"
+RUN_SAVE_DIR_RUNTIME="$(to_runtime_path "${RUN_SAVE_DIR}")"
 
 echo "Running variant: ${VARIANT}"
 echo "Checkpoint dir: ${RUN_SAVE_DIR}"
@@ -185,7 +209,7 @@ if [[ "${TASK_ID}" == "0" ]]; then
         "trainer.max_steps=24" \
         "trainer.experiment_name=${RUN_ID}" \
         "trainer.logger=[\"file\",\"wandb\"]" \
-        "trainer.save_checkpoint_path=${RUN_SAVE_DIR}" \
+        "trainer.save_checkpoint_path=${RUN_SAVE_DIR_RUNTIME}" \
         "trainer.find_last_checkpoint=true"
     exit 0
 fi
@@ -200,13 +224,13 @@ run_train \
     "trainer.max_steps=8" \
     "trainer.experiment_name=${RUN_ID}_warmup" \
     "trainer.logger=[\"file\"]" \
-    "trainer.save_checkpoint_path=${RUN_SAVE_DIR}" \
+    "trainer.save_checkpoint_path=${RUN_SAVE_DIR_RUNTIME}" \
     "trainer.find_last_checkpoint=true"
 
 # Phase B: train AR model offline on GPU.
 run_python research/scripts/train_ar_offline.py \
-    --buffer-dir "${RUN_SAVE_DIR}/research/buffer" \
-    --output-dir "${RUN_SAVE_DIR}/research/ar" \
+    --buffer-dir "${RUN_SAVE_DIR_RUNTIME}/research/buffer" \
+    --output-dir "${RUN_SAVE_DIR_RUNTIME}/research/ar" \
     --device cuda \
     --global-step 8 \
     --max-seq-len 4096 \
@@ -225,5 +249,5 @@ run_train \
     "trainer.max_steps=24" \
     "trainer.experiment_name=${RUN_ID}" \
     "trainer.logger=[\"file\",\"wandb\"]" \
-    "trainer.save_checkpoint_path=${RUN_SAVE_DIR}" \
+    "trainer.save_checkpoint_path=${RUN_SAVE_DIR_RUNTIME}" \
     "trainer.find_last_checkpoint=true"
