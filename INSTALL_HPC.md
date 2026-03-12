@@ -1,34 +1,60 @@
-# EasyR1 + LeaRS on HPC (Singularity/Apptainer)
+# EasyR1 + LeaRS on HPC (Mila + Compute Canada)
 
 This repo is designed to run with the Docker image:
 
 - `hiyouga/verl:ngc-th2.8.0-cu12.9-vllm0.11.0`
 
-On Mila/CC, run it via Singularity or Apptainer.
+On Mila, use Singularity. On Compute Canada (for example Tamia), use Apptainer.
 
 ## 1. Pull image to SIF
+
+### Mila (Singularity)
 
 ```bash
 module load singularity/3.7.1
 
-export SINGULARITY_CACHEDIR=/home/mila/z/zihan.wang/scratch/.singularity_cache
-export SINGULARITY_TMPDIR=/home/mila/z/zihan.wang/scratch/.singularity_tmp
+export SINGULARITY_CACHEDIR=$SCRATCH/.singularity_cache
+export SINGULARITY_TMPDIR=$SCRATCH/.singularity_tmp
 mkdir -p "$SINGULARITY_CACHEDIR" "$SINGULARITY_TMPDIR"
 
-cd /home/mila/z/zihan.wang/scratch/Learning_from_Retrospection
+cd $SCRATCH/Learning_from_Retrospection
 singularity pull easyr1.sif docker://hiyouga/verl:ngc-th2.8.0-cu12.9-vllm0.11.0
 ```
 
+### Compute Canada (Apptainer)
+
+```bash
+module load apptainer
+
+export APPTAINER_CACHEDIR=$SCRATCH/.apptainer_cache
+export APPTAINER_TMPDIR=$SCRATCH/.apptainer_tmp
+mkdir -p "$APPTAINER_CACHEDIR" "$APPTAINER_TMPDIR"
+
+cd $SCRATCH/Learning_from_Retrospection
+apptainer pull easyr1.sif docker://hiyouga/verl:ngc-th2.8.0-cu12.9-vllm0.11.0
+```
+
+On Tamia, this is typically available under `~/links/scratch/Learning_from_Retrospection`.
+
 ## 2. Interactive shell
+
+### Mila (Singularity)
 
 ```bash
 singularity shell --nv --cleanenv \
-  --bind /home/mila/z/zihan.wang/scratch/Learning_from_Retrospection:/workspace \
+  --bind $SCRATCH/Learning_from_Retrospection:/workspace \
   easyr1.sif
 cd /workspace
 ```
 
-If your cluster exposes `apptainer` instead of `singularity`, replace the binary name.
+### Compute Canada (Apptainer)
+
+```bash
+apptainer shell --nv --cleanenv \
+  --bind $SCRATCH/Learning_from_Retrospection:/workspace \
+  easyr1.sif
+cd /workspace
+```
 
 ## 3. Canonical LeaRS scripts
 
@@ -133,4 +159,3 @@ Slurm logs are written to:
 
 - `slurm_logs/slurm-<jobname>-<jobid>.out`
 - `slurm_logs/slurm-<jobname>-<arrayjob>_<task>.out`
-
