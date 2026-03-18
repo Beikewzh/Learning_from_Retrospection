@@ -22,7 +22,7 @@ join_cmd() {
 }
 
 WANDB_PROJECT_NAME="${WANDB_PROJECT_NAME:-COMP767}"
-WANDB_ENTITY="${WANDB_ENTITY:-zihan-wang-beike-mcgill-university}"
+WANDB_ENTITY="${WANDB_ENTITY:-pingsheng}"
 export WANDB_PROJECT_NAME WANDB_ENTITY
 
 PYTHON_BIN="${PYTHON_BIN:-python3}"
