@@ -120,8 +120,8 @@ class IntrinsicConfig:
     mode: str = "weighted_additive"
     outcome_gated: bool = True
     success_threshold: float = 0.0
-    lambda_success: float = 0.1
-    lambda_failure: float = 0.1
+    lambda_success: float = 1e-5
+    lambda_failure: float = 1e-3
     normalize: str = "running_zscore"
     clip_value: float = 5.0
     token_mode: str = "dense"
