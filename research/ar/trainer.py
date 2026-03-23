@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import torch
@@ -37,6 +38,22 @@ class _LatentSequenceDataset(Dataset):
 
     def __getitem__(self, idx: int) -> torch.Tensor:
         return self.samples[idx]
+
+
+class _LatentSequencePathDataset(Dataset):
+    def __init__(self, sequence_paths: list[str | os.PathLike[str]]):
+        self.samples = [str(Path(path)) for path in sequence_paths]
+
+    def __len__(self) -> int:
+        return len(self.samples)
+
+    def __getitem__(self, idx: int) -> torch.Tensor:
+        seq = torch.load(self.samples[idx], map_location="cpu", weights_only=False)
+        if not isinstance(seq, torch.Tensor):
+            raise TypeError(f"Expected tensor in {self.samples[idx]}, got {type(seq)!r}")
+        if seq.ndim != 2 or seq.size(0) <= 1:
+            raise ValueError(f"Invalid latent sequence in {self.samples[idx]} with shape {tuple(seq.shape)}")
+        return seq.float()
 
 
 def _collate_sequences(batch: list[torch.Tensor]) -> dict[str, torch.Tensor]:
@@ -90,6 +107,77 @@ class ARTrainer:
             return None
 
         dataset = _LatentSequenceDataset(sequences)
+        if len(dataset) < self.config.min_buffer_samples:
+            return None
+
+        device = torch.device(self.config.device)
+        latent_dim = dataset[0].size(1)
+        model = self._build_model(latent_dim=latent_dim, device=device)
+        model.train()
+
+        dataloader = DataLoader(
+            dataset,
+            batch_size=self.config.batch_size,
+            shuffle=True,
+            drop_last=False,
+            num_workers=self.config.num_workers,
+            collate_fn=_collate_sequences,
+        )
+        data_iter = iter(dataloader)
+
+        optimizer = torch.optim.AdamW(model.parameters(), lr=self.config.lr)
+        running_loss = 0.0
+        seen_steps = 0
+
+        for _ in range(self.config.train_steps):
+            try:
+                batch = next(data_iter)
+            except StopIteration:
+                data_iter = iter(dataloader)
+                batch = next(data_iter)
+
+            x = batch["x"].to(device)
+            y = batch["y"].to(device)
+            mask = batch["mask"].to(device)
+            key_padding_mask = batch["key_padding_mask"].to(device)
+
+            pred = model(x, key_padding_mask=key_padding_mask)
+            per_token = (pred - y).pow(2).mean(dim=-1)
+            denom = mask.float().sum().clamp_min(1.0)
+            loss = (per_token * mask.float()).sum() / denom
+
+            optimizer.zero_grad(set_to_none=True)
+            loss.backward()
+            nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            optimizer.step()
+
+            running_loss += loss.detach().item()
+            seen_steps += 1
+
+        mean_loss = running_loss / max(seen_steps, 1)
+        ckpt_name = f"ar_step_{global_step}.pt"
+        tmp_path = os.path.join(self.ckpt_dir, ckpt_name + ".tmp")
+        ckpt_path = os.path.join(self.ckpt_dir, ckpt_name)
+        latest_path = os.path.join(self.ckpt_dir, "latest.pt")
+
+        payload: dict[str, Any] = {
+            "model_state_dict": model.state_dict(),
+            "latent_dim": latent_dim,
+            "config": self.config.__dict__,
+            "global_step": global_step,
+            "train_loss": mean_loss,
+        }
+        torch.save(payload, tmp_path)
+        os.replace(tmp_path, ckpt_path)
+        torch.save(payload, latest_path)
+
+        return ARTrainOutput(checkpoint_path=ckpt_path, train_loss=mean_loss, steps=seen_steps)
+
+    def train_from_sequence_paths(self, sequence_paths: list[str | os.PathLike[str]], global_step: int) -> ARTrainOutput | None:
+        if len(sequence_paths) < self.config.min_buffer_samples:
+            return None
+
+        dataset = _LatentSequencePathDataset(sequence_paths)
         if len(dataset) < self.config.min_buffer_samples:
             return None
 
