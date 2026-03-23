@@ -190,3 +190,5 @@ data/*_normalized.jsonl
 
 # proposal pdf
 proposal/
+
+outputs/

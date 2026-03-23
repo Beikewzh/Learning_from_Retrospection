@@ -33,6 +33,33 @@ from research.buffer import ParquetLatentBuffer
 from research.latent.extractor import cast_latent_dtype, select_hidden_from_output, slice_latent_tokens
 
 
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+
+def resolve_repo_mounted_path(path_str: str) -> Path:
+    p = Path(path_str).expanduser()
+    p_str = str(p)
+    if p.exists():
+        return p.resolve()
+
+    host_repo = os.environ.get("REPO_ROOT")
+    if host_repo:
+        host_repo_raw = str(Path(host_repo).expanduser())
+        try:
+            host_repo_path = Path(host_repo).expanduser().resolve()
+            host_repo_str = str(host_repo_path)
+        except Exception:
+            host_repo_str = ""
+        for prefix in [host_repo_raw, host_repo_str]:
+            if prefix and (p_str == prefix or p_str.startswith(prefix + "/")):
+                rel_str = p_str[len(prefix):].lstrip("/")
+                return PROJECT_ROOT / rel_str
+
+    if p_str.startswith("/workspace/") or p_str == "/workspace":
+        return p
+    return p
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", type=str, required=True, help="HF model id or local path.")
@@ -47,12 +74,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--latent-dtype", type=str, default="fp16", choices=["fp16", "fp32"])
     parser.add_argument("--layer-index", type=int, default=-1)
     parser.add_argument("--max-prompt-length", type=int, default=1024)
-    parser.add_argument("--max-response-length", type=int, default=512)
+    parser.add_argument("--max-response-length", type=int, default=4096)
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--top-p", type=float, default=1.0)
     parser.add_argument("--top-k", type=int, default=50)
     parser.add_argument("--num-samples-per-question", type=int, default=1, help="Number of responses to sample per question.")
     parser.add_argument("--seed", type=int, default=1, help="Base random seed for generation.")
+    parser.add_argument("--num-shards", type=int, default=1, help="Total number of deterministic question shards.")
+    parser.add_argument("--shard-index", type=int, default=0, help="0-based shard index to process.")
     parser.add_argument("--shard-max-samples", type=int, default=256)
     parser.add_argument(
         "--flush-every-n-samples",
@@ -89,7 +118,7 @@ def resolve_torch_dtype(name: str) -> torch.dtype | None:
 def configure_cache(cache_root: str | None) -> None:
     if cache_root is None:
         return
-    root = Path(cache_root).expanduser().resolve()
+    root = resolve_repo_mounted_path(cache_root)
     hf_home = root / "huggingface"
     os.environ["HF_HOME"] = str(hf_home)
     os.environ["HF_HUB_CACHE"] = str(hf_home / "hub")
@@ -247,10 +276,14 @@ def extract_response_latents(
 
 def main() -> None:
     args = parse_args()
+    if args.num_shards <= 0:
+        raise ValueError("--num-shards must be >= 1")
+    if args.shard_index < 0 or args.shard_index >= args.num_shards:
+        raise ValueError("--shard-index must satisfy 0 <= shard-index < num-shards")
     configure_cache(args.cache_root)
-    input_path = Path(args.input).expanduser().resolve()
-    output_dir = Path(args.output_dir).expanduser().resolve()
-    prompt_template_path = Path(args.prompt_template).expanduser().resolve()
+    input_path = resolve_repo_mounted_path(args.input)
+    output_dir = resolve_repo_mounted_path(args.output_dir)
+    prompt_template_path = resolve_repo_mounted_path(args.prompt_template)
     output_dir.mkdir(parents=True, exist_ok=True)
     metadata_path = output_dir / "metadata.jsonl"
     summary_path = output_dir / "collection_summary.json"
@@ -308,13 +341,19 @@ def main() -> None:
     saved = len(existing_uids)
     saved_questions = 0
     skipped_existing = 0
+    seen_questions = 0
+    selected_questions = 0
     open_mode = "a" if args.resume and metadata_path.exists() else "w"
     since_flush = 0
     with input_path.open(encoding="utf-8") as src, metadata_path.open(open_mode, encoding="utf-8") as meta_out:
-        for idx, line in enumerate(src, start=1):
-            if args.limit is not None and processed >= args.limit:
-                break
+        for line in src:
             if not line.strip():
+                continue
+            if args.limit is not None and seen_questions >= args.limit:
+                break
+            question_idx = seen_questions
+            seen_questions += 1
+            if question_idx % args.num_shards != args.shard_index:
                 continue
             row = json.loads(line)
             question = str(row[args.question_key])
@@ -327,7 +366,7 @@ def main() -> None:
                 if sample_uid in existing_uids:
                     skipped_existing += 1
                     continue
-                sample_seed = int(args.seed) + processed * max(1, args.num_samples_per_question) + sample_idx
+                sample_seed = int(args.seed) + question_idx * max(1, args.num_samples_per_question) + sample_idx
 
                 full_sequences, response_ids, response_text = generate_one(
                     model=model,
@@ -403,6 +442,7 @@ def main() -> None:
                     meta_out.flush()
                     since_flush = 0
             processed += 1
+            selected_questions += 1
             if question_had_new_sample:
                 saved_questions += 1
 
@@ -414,10 +454,14 @@ def main() -> None:
         "buffer_dir": str(buffer_dir),
         "metadata_path": str(metadata_path),
         "processed_examples": processed,
+        "seen_questions_before_shard_filter": seen_questions,
+        "selected_questions": selected_questions,
         "saved_questions": saved_questions,
         "saved_sequences": saved,
         "skipped_existing_sequences": skipped_existing,
         "num_samples_per_question": args.num_samples_per_question,
+        "num_shards": args.num_shards,
+        "shard_index": args.shard_index,
         "temperature": args.temperature,
         "seed": args.seed,
         "resume": bool(args.resume),

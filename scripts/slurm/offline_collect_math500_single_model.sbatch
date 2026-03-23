@@ -44,6 +44,8 @@ if [[ -z "${MODEL_ID}" ]]; then
 fi
 
 LIMIT="${LIMIT:-500}"
+NUM_SHARDS="${NUM_SHARDS:-1}"
+SHARD_INDEX="${SHARD_INDEX:-0}"
 NUM_SAMPLES_PER_QUESTION="${NUM_SAMPLES_PER_QUESTION:-32}"
 TEMPERATURE="${TEMPERATURE:-1.0}"
 TOP_P="${TOP_P:-1.0}"
@@ -57,6 +59,8 @@ SEED="${SEED:-1}"
 OVERWRITE="${OVERWRITE:-0}"
 RESUME="${RESUME:-1}"
 PREDOWNLOAD_ONLY="${PREDOWNLOAD_ONLY:-0}"
+SKIP_EXPORT="${SKIP_EXPORT:-0}"
+SKIP_PREDOWNLOAD="${SKIP_PREDOWNLOAD:-0}"
 FLUSH_EVERY_N_SAMPLES="${FLUSH_EVERY_N_SAMPLES:-1}"
 
 USE_SINGULARITY="${USE_SINGULARITY:-1}"
@@ -103,13 +107,19 @@ RUNTIME="/workspace"
 
 to_runtime_path() {
     local host_path
+    local repo_root_resolved
     host_path="$(python3 -c 'from pathlib import Path; import sys; print(Path(sys.argv[1]).expanduser().resolve())' "$1")"
-    if [[ "${host_path}" == "${REPO_ROOT}" ]]; then
+    repo_root_resolved="$(python3 -c 'from pathlib import Path; import sys; print(Path(sys.argv[1]).expanduser().resolve())' "${REPO_ROOT}")"
+    if [[ "${host_path}" == "${REPO_ROOT}" || "${host_path}" == "${repo_root_resolved}" ]]; then
         printf '%s' "${RUNTIME}"
         return
     fi
     if [[ "${host_path}" == "${REPO_ROOT}/"* ]]; then
         printf '%s' "${RUNTIME}${host_path#${REPO_ROOT}}"
+        return
+    fi
+    if [[ "${host_path}" == "${repo_root_resolved}/"* ]]; then
+        printf '%s' "${RUNTIME}${host_path#${repo_root_resolved}}"
         return
     fi
     printf '%s' "${host_path}"
@@ -128,6 +138,9 @@ if [[ -z "${MODEL_TAG}" ]]; then
 fi
 if [[ -z "${DATA_PATH}" ]]; then
     DATA_PATH="${REPO_ROOT}/data/math500_local_${MODEL_TAG}.jsonl"
+fi
+if [[ "${NUM_SHARDS}" -gt 1 ]]; then
+    DATA_PATH="${REPO_ROOT}/data/math500_local_${MODEL_TAG}_limit${LIMIT}.jsonl"
 fi
 
 RUNTIME_CACHE_ROOT="$(to_runtime_path "${CACHE_ROOT}")"
@@ -185,30 +198,38 @@ log "Cache root: ${CACHE_ROOT}"
 log "Data path: ${DATA_PATH}"
 log "Output base: ${OUTPUT_BASE}"
 log "Temperature: ${TEMPERATURE}, samples/question: ${NUM_SAMPLES_PER_QUESTION}, limit: ${LIMIT}"
+log "Sharding: num_shards=${NUM_SHARDS}, shard_index=${SHARD_INDEX}"
 log "Resume: ${RESUME}, overwrite: ${OVERWRITE}, flush_every_n_samples: ${FLUSH_EVERY_N_SAMPLES}"
 
-log "Exporting MATH-500 to local JSONL"
-run_shell "$(build_env_prefix "${RUNTIME_CACHE_ROOT}") && $(join_cmd \
-    ${PYTHON_BIN} research/scripts/export_math500_jsonl.py \
-    --output "${RUNTIME_DATA_PATH}" \
-    --split test \
-    --limit "${LIMIT}" \
-    --cache-root "${RUNTIME_CACHE_ROOT}")"
+if [[ "${SKIP_EXPORT}" != "1" ]]; then
+    log "Exporting MATH-500 to local JSONL"
+    run_shell "$(build_env_prefix "${RUNTIME_CACHE_ROOT}") && $(join_cmd \
+        ${PYTHON_BIN} research/scripts/export_math500_jsonl.py \
+        --output "${RUNTIME_DATA_PATH}" \
+        --split test \
+        --limit "${LIMIT}" \
+        --cache-root "${RUNTIME_CACHE_ROOT}")"
+fi
 
-log "Pre-downloading ${MODEL_ID}"
-run_shell "$(build_env_prefix "${RUNTIME_CACHE_ROOT}") && $(join_cmd \
-    ${PYTHON_BIN} research/scripts/predownload_hf_assets.py \
-    --model "${MODEL_ID}" \
-    --dataset HuggingFaceH4/MATH-500 \
-    --dataset-split test \
-    --cache-root "${RUNTIME_CACHE_ROOT}")"
+if [[ "${SKIP_PREDOWNLOAD}" != "1" ]]; then
+    log "Pre-downloading ${MODEL_ID}"
+    run_shell "$(build_env_prefix "${RUNTIME_CACHE_ROOT}") && $(join_cmd \
+        ${PYTHON_BIN} research/scripts/predownload_hf_assets.py \
+        --model "${MODEL_ID}" \
+        --dataset HuggingFaceH4/MATH-500 \
+        --dataset-split test \
+        --cache-root "${RUNTIME_CACHE_ROOT}")"
+fi
 
 if [[ "${PREDOWNLOAD_ONLY}" == "1" ]]; then
     log "Predownload only requested; exiting."
     exit 0
 fi
 
-output_dir="${RUNTIME_OUTPUT_BASE}/${MODEL_TAG}"
+output_dir="${RUNTIME_OUTPUT_BASE}/${MODEL_TAG}_limit${LIMIT}"
+if [[ "${NUM_SHARDS}" -gt 1 ]]; then
+    output_dir="${output_dir}/shard_$(printf '%02d' "${SHARD_INDEX}")"
+fi
 collect_cmd=(
     ${PYTHON_BIN} -m research.scripts.collect_latents_offline
     --model "${MODEL_ID}"
@@ -225,8 +246,10 @@ collect_cmd=(
     --top-p "${TOP_P}"
     --top-k "${TOP_K}"
     --num-samples-per-question "${NUM_SAMPLES_PER_QUESTION}"
+    --num-shards "${NUM_SHARDS}"
+    --shard-index "${SHARD_INDEX}"
     --flush-every-n-samples "${FLUSH_EVERY_N_SAMPLES}"
-    --seed "${SEED}"
+    --seed "$((SEED + SHARD_INDEX * 1000))"
     --limit "${LIMIT}"
 )
 if [[ "${OVERWRITE}" == "1" ]]; then

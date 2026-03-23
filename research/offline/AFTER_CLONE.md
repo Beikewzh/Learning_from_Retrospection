@@ -41,12 +41,17 @@ This does not change the online RL training path under `verl/`.
   - one model per job, resumable
 - `scripts/slurm/submit_offline_collect_math500_multi_model.sh`
   - submits one single-model job per model so Slurm can parallelize them
-- `scripts/slurm/offline_collect_math500_multi_model.sbatch`
-  - older sequential two-model launcher kept for reference, but the single-model path is the cleaner one
 
 ## Scratch Cache
 
 The offline workflow assumes Hugging Face cache should live under the repo's scratch-backed `.cache/`.
+
+Important container-path rule:
+
+- Slurm jobs run the repo inside the container at `/workspace`, not at the host scratch path.
+- Host paths like `/network/scratch/.../Learning_from_Retrospection/...` can be passed to wrappers on the host, but inside Python scripts they must resolve to `/workspace/...`.
+- When adding new scripts, do not blindly call `.resolve()` on host repo paths inside the container. Use the existing repo-path remapping pattern instead.
+- If a job fails trying to create paths under `/network/...` from inside the container, that is a host/container path bug, not a cache bug.
 
 Use:
 
