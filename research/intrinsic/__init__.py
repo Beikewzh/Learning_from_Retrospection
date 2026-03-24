@@ -14,6 +14,18 @@
 
 """Intrinsic reward transformation utilities."""
 
-from .reward_rule import RunningZScore, apply_intrinsic_rule
+from .reward_rule import (
+    INTRINSIC_GATE_REGISTRY,
+    RunningZScore,
+    apply_intrinsic_rule,
+    compose_total_advantage,
+    compute_intrinsic_gate,
+)
 
-__all__ = ["RunningZScore", "apply_intrinsic_rule"]
+__all__ = [
+    "RunningZScore",
+    "apply_intrinsic_rule",
+    "compute_intrinsic_gate",
+    "compose_total_advantage",
+    "INTRINSIC_GATE_REGISTRY",
+]

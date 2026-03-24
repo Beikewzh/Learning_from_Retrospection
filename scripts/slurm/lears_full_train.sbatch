@@ -402,18 +402,35 @@ case "${CURRICULUM_STAGE}" in
         ;;
     stage1_main)
         TRAIN_FILES="${TRAIN_FILES:-hiyouga/math12k@train}"
-        VAL_FILES="${VAL_FILES:-hiyouga/math12k@test}"
+        VAL_FILES="${VAL_FILES:-HuggingFaceH4/MATH-500@test}"
         PROMPT_KEY="${PROMPT_KEY:-problem}"
         ANSWER_KEY="${ANSWER_KEY:-answer}"
         FORMAT_PROMPT="${FORMAT_PROMPT:-./examples/format_prompt/math.jinja}"
         TOTAL_EPOCHS="${TOTAL_EPOCHS:-2.0}"
         WARMUP_EPOCHS="${WARMUP_EPOCHS:-0.25}"
         REFRESH_EPOCHS="${REFRESH_EPOCHS:-0.25}"
-        AR_TRAIN_STEPS="${AR_TRAIN_STEPS:-120}"
+        AR_TRAIN_STEPS="${AR_TRAIN_STEPS:-60}"
         AR_MIN_BUFFER_SAMPLES="${AR_MIN_BUFFER_SAMPLES:-256}"
         ;;
     *)
         echo "Unsupported CURRICULUM_STAGE=${CURRICULUM_STAGE}. Use one of: stage0_math500, stage1_main." >&2
+        exit 1
+        ;;
+esac
+
+DATASET_PRESET="${DATASET_PRESET:-math12k_math500}"
+case "${DATASET_PRESET}" in
+    none)
+        ;;
+    math12k_math500)
+        TRAIN_FILES="${TRAIN_FILES:-hiyouga/math12k@train}"
+        VAL_FILES="${VAL_FILES:-HuggingFaceH4/MATH-500@test}"
+        PROMPT_KEY="${PROMPT_KEY:-problem}"
+        ANSWER_KEY="${ANSWER_KEY:-answer}"
+        FORMAT_PROMPT="${FORMAT_PROMPT:-./examples/format_prompt/math.jinja}"
+        ;;
+    *)
+        echo "Unsupported DATASET_PRESET=${DATASET_PRESET}. Use one of: none, math12k_math500." >&2
         exit 1
         ;;
 esac
@@ -457,7 +474,7 @@ if [[ "${SCHEDULE_MODE}" != "epoch" && "${SCHEDULE_MODE}" != "step" ]]; then
 fi
 
 MAX_PROMPT_LENGTH="${MAX_PROMPT_LENGTH:-512}"
-MAX_RESPONSE_LENGTH="${MAX_RESPONSE_LENGTH:-4096}"
+MAX_RESPONSE_LENGTH="${MAX_RESPONSE_LENGTH:-2048}"
 ROLLOUT_BATCH_SIZE="${ROLLOUT_BATCH_SIZE:-8}"
 ACTOR_GLOBAL_BATCH_SIZE="${ACTOR_GLOBAL_BATCH_SIZE:-8}"
 ROLLOUT_N="${ROLLOUT_N:-2}"
@@ -482,6 +499,27 @@ if [[ "${AR_DEVICE}" != "cpu" && "${AR_DEVICE}" != "cuda" ]]; then
     echo "AR_DEVICE must be one of: cpu, cuda." >&2
     exit 1
 fi
+AR_ASYNC_ENABLED="${AR_ASYNC_ENABLED:-false}"
+AR_ASYNC_QUEUE_SIZE="${AR_ASYNC_QUEUE_SIZE:-1}"
+AR_RELOAD_EVERY_N_STEPS="${AR_RELOAD_EVERY_N_STEPS:-1}"
+INTRINSIC_ETA="${INTRINSIC_ETA:-0.05}"
+INTRINSIC_GATE_MODE="${INTRINSIC_GATE_MODE:-failure_only}"
+INTRINSIC_LAMBDA_SUCCESS_GATE="${INTRINSIC_LAMBDA_SUCCESS_GATE:-0.25}"
+INTRINSIC_SMOOTHING_WINDOW="${INTRINSIC_SMOOTHING_WINDOW:-3}"
+INTRINSIC_NORMALIZE_SCOPE="${INTRINSIC_NORMALIZE_SCOPE:-per_sequence_zscore}"
+INTRINSIC_GROUP_NORM_PER_TIMESTEP="${INTRINSIC_GROUP_NORM_PER_TIMESTEP:-false}"
+INTRINSIC_CLIP_VALUE="${INTRINSIC_CLIP_VALUE:-3.0}"
+BUFFER_FLUSH_EVERY_N_STEPS="${BUFFER_FLUSH_EVERY_N_STEPS:-10}"
+TRACE_ENABLED="${TRACE_ENABLED:-true}"
+TRACE_FLUSH_EVERY_N_STEPS="${TRACE_FLUSH_EVERY_N_STEPS:-20}"
+TRACE_RETENTION_MODE="${TRACE_RETENTION_MODE:-keep_all}"
+TRACE_MAX_DISK_GB="${TRACE_MAX_DISK_GB:-500}"
+TRACE_SAMPLE_RATE="${TRACE_SAMPLE_RATE:-1.0}"
+TRACE_SAVE_TOKENS="${TRACE_SAVE_TOKENS:-true}"
+TRACE_SAVE_DECODED_TEXT="${TRACE_SAVE_DECODED_TEXT:-true}"
+TRACE_SAVE_LATENTS="${TRACE_SAVE_LATENTS:-true}"
+TRACE_SAVE_AR_ERROR="${TRACE_SAVE_AR_ERROR:-true}"
+EVAL_FREQ="${EVAL_FREQ:-100}"
 
 BASE_CONFIG_RUNTIME="$(to_runtime_path "${BASE_CONFIG}")"
 FORMAT_PROMPT_RUNTIME="$(to_runtime_path "${FORMAT_PROMPT}")"
@@ -514,7 +552,7 @@ AR_WINDOW_INTERVALS="${AR_WINDOW_INTERVALS:-2}"
 AR_WINDOW_INTERVAL_STEPS="${AR_WINDOW_INTERVAL_STEPS:-${REFRESH_INTERVAL}}"
 AR_MAX_AGE_STEPS="${AR_MAX_AGE_STEPS:-${REFRESH_INTERVAL}}"
 AR_STALE_ACTION="${AR_STALE_ACTION:-warn}"
-ONLINE_AR_TRAIN_EVERY_N_STEPS="${ONLINE_AR_TRAIN_EVERY_N_STEPS:-${REFRESH_INTERVAL}}"
+ONLINE_AR_TRAIN_EVERY_N_STEPS="${ONLINE_AR_TRAIN_EVERY_N_STEPS:-32}"
 
 if (( TOTAL_STEPS <= 0 || WARMUP_STEPS <= 0 || REFRESH_INTERVAL <= 0 )); then
     echo "TOTAL_STEPS, WARMUP_STEPS, and REFRESH_INTERVAL must all be > 0." >&2
@@ -559,6 +597,7 @@ RUN_SAVE_DIR_RUNTIME="$(to_runtime_path "${RUN_SAVE_DIR}")"
 
 COMMON_ARGS=(
     "config=${BASE_CONFIG_RUNTIME}"
+    "data.dataset_preset=${DATASET_PRESET}"
     "data.train_files=${TRAIN_FILES}"
     "data.val_files=${VAL_FILES}"
     "data.prompt_key=${PROMPT_KEY}"
@@ -583,18 +622,40 @@ COMMON_ARGS=(
     "research.ar.window_interval_steps=${AR_WINDOW_INTERVAL_STEPS}"
     "research.ar.max_age_steps=${AR_MAX_AGE_STEPS}"
     "research.ar.stale_action=${AR_STALE_ACTION}"
+    "research.ar.async_enabled=${AR_ASYNC_ENABLED}"
+    "research.ar.async_queue_size=${AR_ASYNC_QUEUE_SIZE}"
+    "research.ar.reload_every_n_steps=${AR_RELOAD_EVERY_N_STEPS}"
     "research.intrinsic.lambda_success=${LAMBDA_SUCCESS}"
     "research.intrinsic.lambda_failure=${LAMBDA_FAILURE}"
+    "research.intrinsic.eta=${INTRINSIC_ETA}"
+    "research.intrinsic.gate_mode=${INTRINSIC_GATE_MODE}"
+    "research.intrinsic.lambda_success_gate=${INTRINSIC_LAMBDA_SUCCESS_GATE}"
+    "research.intrinsic.temporal_smoothing_window=${INTRINSIC_SMOOTHING_WINDOW}"
+    "research.intrinsic.normalize_scope=${INTRINSIC_NORMALIZE_SCOPE}"
+    "research.intrinsic.group_norm_per_timestep=${INTRINSIC_GROUP_NORM_PER_TIMESTEP}"
+    "research.intrinsic.clip_value=${INTRINSIC_CLIP_VALUE}"
+    "research.buffer.flush_every_n_steps=${BUFFER_FLUSH_EVERY_N_STEPS}"
+    "research.tracing.enabled=${TRACE_ENABLED}"
+    "research.tracing.flush_every_n_steps=${TRACE_FLUSH_EVERY_N_STEPS}"
+    "research.tracing.retention_mode=${TRACE_RETENTION_MODE}"
+    "research.tracing.max_disk_gb=${TRACE_MAX_DISK_GB}"
+    "research.tracing.sample_rate=${TRACE_SAMPLE_RATE}"
+    "research.tracing.save_tokens=${TRACE_SAVE_TOKENS}"
+    "research.tracing.save_decoded_text=${TRACE_SAVE_DECODED_TEXT}"
+    "research.tracing.save_latents=${TRACE_SAVE_LATENTS}"
+    "research.tracing.save_ar_error=${TRACE_SAVE_AR_ERROR}"
     "data.max_prompt_length=${MAX_PROMPT_LENGTH}"
     "data.max_response_length=${MAX_RESPONSE_LENGTH}"
     "data.rollout_batch_size=${ROLLOUT_BATCH_SIZE}"
     "worker.actor.global_batch_size=${ACTOR_GLOBAL_BATCH_SIZE}"
     "worker.rollout.n=${ROLLOUT_N}"
     "worker.rollout.tensor_parallel_size=${ROLLOUT_TP_SIZE}"
+    "worker.rollout.val_override_config.temperature=0.0"
+    "worker.rollout.val_override_config.top_p=1.0"
     "worker.rollout.val_override_config.n=1"
     "worker.rollout.disable_tqdm=true"
     "worker.actor.padding_free=false"
-    "trainer.val_freq=-1"
+    "trainer.val_freq=${EVAL_FREQ}"
     "trainer.val_before_train=false"
     "trainer.save_freq=${SAVE_FREQ}"
     "trainer.save_limit=3"

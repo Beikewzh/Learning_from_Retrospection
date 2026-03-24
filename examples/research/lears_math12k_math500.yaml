@@ -1,12 +1,12 @@
 data:
-  dataset_preset: none
-  train_files: openai/gsm8k:socratic@train
-  val_files: openai/gsm8k:socratic@test
-  prompt_key: question
+  dataset_preset: math12k_math500
+  train_files: ""
+  val_files: ""
+  prompt_key: prompt
   answer_key: answer
-  format_prompt: ./examples/format_prompt/math.jinja
-  max_prompt_length: 1024
-  max_response_length: 1024
+  format_prompt: null
+  max_prompt_length: 512
+  max_response_length: 2048
   rollout_batch_size: 8
   mini_rollout_batch_size: null
   val_batch_size: 32
@@ -53,7 +53,7 @@ worker:
       offload_optimizer: true
 
   rollout:
-    n: 4
+    n: 2
     temperature: 1.0
     top_p: 1.0
     dtype: fp16
@@ -62,6 +62,10 @@ worker:
     enforce_eager: false
     enable_chunked_prefill: false
     disable_tqdm: false
+    val_override_config:
+      n: 1
+      temperature: 0.0
+      top_p: 1.0
 
   ref:
     fsdp:
@@ -80,13 +84,13 @@ trainer:
   total_epochs: 1
   max_steps: null
   project_name: easy_r1
-  experiment_name: qwen3_4b_gsm8k_lears
+  experiment_name: qwen3_4b_math12k_math500_lears
   logger: ["file", "wandb"]
   nnodes: 1
   n_gpus_per_node: 1
   max_try_make_batch: 20
   critic_warmup: 0
-  val_freq: -1
+  val_freq: 100
   val_before_train: false
   val_only: false
   val_generations_to_log: 0
@@ -121,14 +125,14 @@ research:
     n_heads: 4
     dropout: 0.1
     lr: 1.0e-4
-    batch_size: 16
-    train_steps: 100
-    train_every_n_steps: 20
+    batch_size: 8
+    train_steps: 60
+    train_every_n_steps: 32
     min_buffer_samples: 64
     device: cpu
-    max_seq_len: 1024
+    max_seq_len: 2048
     num_workers: 0
-    async_enabled: false
+    async_enabled: true
     async_queue_size: 1
     reload_every_n_steps: 1
   intrinsic:
@@ -140,7 +144,7 @@ research:
     temporal_smoothing_window: 3
     normalize_scope: per_sequence_zscore
     normalize: per_sequence_zscore
-    clip_value: 5.0
+    clip_value: 3.0
     token_mode: dense
     group_norm_per_timestep: false
   tracing:

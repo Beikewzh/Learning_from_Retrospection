@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from types import SimpleNamespace
+from concurrent.futures import Future
 
 import torch
 import pytest
@@ -222,3 +223,42 @@ def test_maybe_train_ar_attempts_on_deterministic_cadence(tmp_path):
 
     manager.close()
     assert captured_steps == [4, 7, 10]
+
+
+def test_poll_async_train_results_updates_metrics(tmp_path):
+    cfg = ResearchConfig(enabled=True)
+    cfg.ar.async_enabled = True
+    cfg.post_init()
+    manager = LeaRSManager(config=cfg, checkpoint_root=str(tmp_path))
+
+    future = Future()
+    future.set_result(SimpleNamespace(train_loss=0.1, steps=1, global_step=9))
+    manager._ar_futures = [future]
+    metrics = manager._poll_async_train_results()
+    manager.close()
+
+    assert metrics["research/ar/async_completed"] == 1.0
+    assert metrics["research/ar/async_queue_depth"] == 0.0
+    assert manager.last_train_step == 9
+
+
+def test_reload_every_n_steps_cadence(tmp_path):
+    cfg = ResearchConfig(enabled=True)
+    cfg.ar.reload_every_n_steps = 3
+    cfg.post_init()
+    manager = LeaRSManager(config=cfg, checkpoint_root=str(tmp_path))
+
+    calls = {"n": 0}
+
+    def fake_reload():
+        calls["n"] += 1
+        return False
+
+    manager._try_load_latest_scorer = fake_reload
+
+    assert manager._maybe_reload_scorer(global_step=1) is False
+    assert manager._maybe_reload_scorer(global_step=2) is False
+    assert manager._maybe_reload_scorer(global_step=3) is False
+    assert manager._maybe_reload_scorer(global_step=4) is False
+    assert calls["n"] == 2
+    manager.close()

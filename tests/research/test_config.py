@@ -14,7 +14,7 @@
 
 import pytest
 
-from research.config import ARConfig, LatentConfig
+from research.config import ARConfig, BufferConfig, IntrinsicConfig, LatentConfig, TracingConfig
 
 
 def test_latent_include_prompt_guard():
@@ -50,4 +50,28 @@ def test_ar_start_after_steps_requires_non_negative():
 def test_ar_stale_action_must_be_valid():
     cfg = ARConfig(stale_action="panic")
     with pytest.raises(ValueError, match="stale_action"):
+        cfg.post_init()
+
+
+def test_ar_async_queue_size_requires_positive():
+    cfg = ARConfig(async_queue_size=0)
+    with pytest.raises(ValueError, match="async_queue_size"):
+        cfg.post_init()
+
+
+def test_buffer_flush_every_n_steps_requires_positive():
+    cfg = BufferConfig(flush_every_n_steps=0)
+    with pytest.raises(ValueError, match="flush_every_n_steps"):
+        cfg.post_init()
+
+
+def test_intrinsic_gate_mode_must_be_valid():
+    cfg = IntrinsicConfig(gate_mode="bad_mode")
+    with pytest.raises(ValueError, match="gate_mode"):
+        cfg.post_init()
+
+
+def test_tracing_retention_mode_must_be_valid():
+    cfg = TracingConfig(retention_mode="drop_all")
+    with pytest.raises(ValueError, match="retention_mode"):
         cfg.post_init()

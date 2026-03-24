@@ -23,6 +23,7 @@ from research.config import ResearchConfig
 
 from ..utils.py_functional import get_abs_path
 from ..workers.config import WorkerConfig
+from .dataset_presets import apply_dataset_preset
 
 
 def recursive_post_init(dataclass_obj):
@@ -36,6 +37,7 @@ def recursive_post_init(dataclass_obj):
 
 @dataclass
 class DataConfig:
+    dataset_preset: str = "none"
     train_files: str = ""
     val_files: str = ""
     prompt_key: str = "prompt"
@@ -59,6 +61,7 @@ class DataConfig:
     filter_overlong_prompts_workers: int = 16
 
     def post_init(self):
+        apply_dataset_preset(self)
         self.image_dir = get_abs_path(self.image_dir, prompt="Image directory")
         self.format_prompt = get_abs_path(self.format_prompt, prompt="Format prompt file")
         self.override_chat_template = get_abs_path(self.override_chat_template, prompt="Chat template file")

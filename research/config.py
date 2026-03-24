@@ -51,6 +51,7 @@ class BufferConfig:
     compression: str = "zstd"
     max_disk_gb: float = 200.0
     max_train_samples: int = 100000
+    flush_every_n_steps: int = 1
 
     def post_init(self):
         if self.backend not in {"parquet"}:
@@ -65,6 +66,8 @@ class BufferConfig:
             raise ValueError("buffer.max_disk_gb must be > 0")
         if self.max_train_samples <= 0:
             raise ValueError("buffer.max_train_samples must be > 0")
+        if self.flush_every_n_steps <= 0:
+            raise ValueError("buffer.flush_every_n_steps must be > 0")
 
 
 @dataclass
@@ -87,6 +90,9 @@ class ARConfig:
     window_interval_steps: Optional[int] = None
     max_age_steps: Optional[int] = None
     stale_action: str = "warn"
+    async_enabled: bool = False
+    async_queue_size: int = 1
+    reload_every_n_steps: int = 1
 
     def post_init(self):
         if self.model_type not in {"tiny_transformer"}:
@@ -113,31 +119,87 @@ class ARConfig:
             raise ValueError("ar.max_age_steps must be > 0 when set")
         if self.stale_action not in {"warn", "fail"}:
             raise ValueError("ar.stale_action must be one of {'warn', 'fail'}")
+        if self.async_queue_size <= 0:
+            raise ValueError("ar.async_queue_size must be > 0")
+        if self.reload_every_n_steps <= 0:
+            raise ValueError("ar.reload_every_n_steps must be > 0")
 
 
 @dataclass
 class IntrinsicConfig:
     mode: str = "weighted_additive"
-    outcome_gated: bool = True
-    success_threshold: float = 0.0
-    lambda_success: float = 1e-5
-    lambda_failure: float = 1e-3
-    normalize: str = "running_zscore"
+    outcome_gated: bool = True  # legacy knob, kept for backward compatibility
+    success_threshold: float = 0.5
+    lambda_success: float = 1e-5  # legacy knob, kept for backward compatibility
+    lambda_failure: float = 1e-3  # legacy knob, kept for backward compatibility
+    normalize: str = "per_sequence_zscore"  # legacy alias for normalize_scope
+    normalize_scope: str = "per_sequence_zscore"
     clip_value: float = 5.0
     token_mode: str = "dense"
     epsilon: float = 1e-6
+    eta: float = 0.05
+    gate_mode: str = "failure_only"
+    lambda_success_gate: float = 0.25
+    temporal_smoothing_window: int = 3
+    group_norm_per_timestep: bool = False
 
     def post_init(self):
         if self.mode not in {"weighted_additive"}:
             raise ValueError(f"Unsupported intrinsic.mode: {self.mode}")
-        if self.normalize not in {"running_zscore", "none"}:
+        if self.normalize not in {"running_zscore", "none", "per_sequence_zscore"}:
             raise ValueError(f"Unsupported intrinsic.normalize: {self.normalize}")
+        if self.normalize_scope not in {"running_zscore", "none", "per_sequence_zscore"}:
+            raise ValueError(f"Unsupported intrinsic.normalize_scope: {self.normalize_scope}")
+        # Backward compatibility: legacy `normalize` can still drive scope when scope is untouched/default.
+        if self.normalize_scope == "per_sequence_zscore" and self.normalize in {"running_zscore", "none"}:
+            self.normalize_scope = self.normalize
+        self.normalize = self.normalize_scope
         if self.token_mode not in {"dense", "last_token"}:
             raise ValueError(f"Unsupported intrinsic.token_mode: {self.token_mode}")
         if self.clip_value <= 0:
             raise ValueError("intrinsic.clip_value must be > 0")
         if self.lambda_success < 0 or self.lambda_failure < 0:
             raise ValueError("intrinsic lambdas must be >= 0")
+        if self.eta < 0:
+            raise ValueError("intrinsic.eta must be >= 0")
+        if self.gate_mode not in {"failure_only", "asymmetric", "none"}:
+            raise ValueError("intrinsic.gate_mode must be one of {'failure_only', 'asymmetric', 'none'}")
+        if self.lambda_success_gate < 0:
+            raise ValueError("intrinsic.lambda_success_gate must be >= 0")
+        if self.temporal_smoothing_window <= 0:
+            raise ValueError("intrinsic.temporal_smoothing_window must be > 0")
+
+
+@dataclass
+class TracingConfig:
+    enabled: bool = True
+    schema_version: str = "v1"
+    dir: Optional[str] = None
+    flush_every_n_steps: int = 10
+    compression: str = "zstd"
+    save_tokens: bool = True
+    save_decoded_text: bool = True
+    save_latents: bool = True
+    save_ar_error: bool = True
+    retention_mode: str = "keep_all"
+    max_disk_gb: float = 500.0
+    sample_rate: float = 1.0
+
+    def post_init(self):
+        if self.dir is not None:
+            self.dir = os.path.abspath(self.dir)
+        if self.flush_every_n_steps <= 0:
+            raise ValueError("tracing.flush_every_n_steps must be > 0")
+        if self.compression not in {"zstd", "snappy", "none"}:
+            raise ValueError("Unsupported tracing.compression")
+        if self.retention_mode not in {"keep_all", "rolling_budget", "sampled"}:
+            raise ValueError("tracing.retention_mode must be one of {'keep_all', 'rolling_budget', 'sampled'}")
+        if self.max_disk_gb <= 0:
+            raise ValueError("tracing.max_disk_gb must be > 0")
+        if not (0.0 < self.sample_rate <= 1.0):
+            raise ValueError("tracing.sample_rate must be in (0, 1]")
+        if not self.schema_version.strip():
+            raise ValueError("tracing.schema_version must be non-empty")
 
 
 @dataclass
@@ -147,6 +209,7 @@ class ResearchConfig:
     buffer: BufferConfig = field(default_factory=BufferConfig)
     ar: ARConfig = field(default_factory=ARConfig)
     intrinsic: IntrinsicConfig = field(default_factory=IntrinsicConfig)
+    tracing: TracingConfig = field(default_factory=TracingConfig)
     checkpoint_subdir: str = "research"
 
     def post_init(self):
@@ -155,3 +218,4 @@ class ResearchConfig:
         self.buffer.post_init()
         self.ar.post_init()
         self.intrinsic.post_init()
+        self.tracing.post_init()

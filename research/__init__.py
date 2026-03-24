@@ -14,7 +14,7 @@
 
 """Research modules for optional LeaRS integrations."""
 
-from .config import ARConfig, BufferConfig, IntrinsicConfig, LatentConfig, ResearchConfig
+from .config import ARConfig, BufferConfig, IntrinsicConfig, LatentConfig, ResearchConfig, TracingConfig
 
 __all__ = [
     "ARConfig",
@@ -22,4 +22,5 @@ __all__ = [
     "IntrinsicConfig",
     "LatentConfig",
     "ResearchConfig",
+    "TracingConfig",
 ]

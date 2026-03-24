@@ -192,3 +192,5 @@ data/*_normalized.jsonl
 proposal/
 
 outputs/
+
+/checkpoints/

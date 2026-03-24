@@ -59,6 +59,7 @@ from .metrics import (
     compute_timing_metrics,
     reduce_metrics,
 )
+from research.intrinsic import compose_total_advantage, compute_intrinsic_gate
 
 if TYPE_CHECKING:
     from research.manager import LeaRSManager
@@ -156,6 +157,39 @@ def compute_advantage(data: DataProto, adv_estimator: AdvantageEstimator, gamma:
     data.batch["advantages"] = advantages
     data.batch["returns"] = returns
     return data
+
+
+def group_normalize_token_advantage(
+    token_advantages: torch.Tensor,
+    response_mask: torch.Tensor,
+    index: np.ndarray,
+    eps: float = 1e-6,
+) -> torch.Tensor:
+    """Normalize token-level advantages across rollout groups at each timestep."""
+    output = torch.zeros_like(token_advantages)
+    id2rows: dict[str, list[int]] = defaultdict(list)
+    for row_idx, uid in enumerate(index.tolist()):
+        id2rows[str(uid)].append(int(row_idx))
+
+    mask_bool = response_mask.bool()
+    for _, rows in id2rows.items():
+        if len(rows) <= 1:
+            continue
+        row_idx_tensor = torch.tensor(rows, device=token_advantages.device, dtype=torch.long)
+        group_adv = token_advantages[row_idx_tensor]
+        group_mask = mask_bool[row_idx_tensor]
+        seq_len = group_adv.size(1)
+        for t in range(seq_len):
+            valid = group_mask[:, t]
+            valid_count = int(valid.sum().item())
+            if valid_count <= 1:
+                continue
+            vals = group_adv[valid, t]
+            mean = vals.mean()
+            std = vals.std(unbiased=False)
+            output[row_idx_tensor[valid], t] = (vals - mean) / (std + eps)
+
+    return output * response_mask.float()
 
 
 class RayPPOTrainer:
@@ -645,18 +679,19 @@ class RayPPOTrainer:
                         reward_metrics = {f"reward/{k}": v for k, v in reduce_metrics(reward_metrics).items()}
                         metrics.update(reward_metrics)
 
+                    extrinsic_scores = batch.batch["token_level_scores"]
+                    intrinsic_advantages = None
                     if self.lears_manager is not None:
-                        extrinsic_scores = batch.batch["token_level_scores"]
                         intrinsic_scores, intrinsic_metrics = self.lears_manager.collect_and_score(
                             batch=batch,
                             extrinsic_scores=extrinsic_scores,
                             global_step=self.global_step,
                         )
-                        intrinsic_scores = intrinsic_scores.to(
+                        intrinsic_advantages = intrinsic_scores.to(
                             device=extrinsic_scores.device,
                             dtype=extrinsic_scores.dtype,
                         )
-                        batch.batch["token_level_scores"] = extrinsic_scores + intrinsic_scores
+                        batch.batch["intrinsic_token_advantages"] = intrinsic_advantages
                         metrics.update(intrinsic_metrics)
 
                     # apply kl penalty if available
@@ -674,6 +709,48 @@ class RayPPOTrainer:
                         gamma=self.config.algorithm.gamma,
                         lam=self.config.algorithm.lam,
                     )
+
+                    # Custom token-level latent GRPO augmentation:
+                    # A_total(i,t) = A_ext(i) + eta * g_i * A_int(i,t)
+                    adv_name = getattr(self.config.algorithm.adv_estimator, "value", self.config.algorithm.adv_estimator)
+                    if (
+                        intrinsic_advantages is not None
+                        and adv_name in (AdvantageEstimator.GRPO.value, AdvantageEstimator.GRPO_PASSK.value)
+                        and self.config.research.intrinsic.eta > 0
+                    ):
+                        response_mask_f = batch.batch["response_mask"].float()
+                        token_intrinsic = intrinsic_advantages * response_mask_f
+                        if self.config.research.intrinsic.group_norm_per_timestep:
+                            token_intrinsic = group_normalize_token_advantage(
+                                token_advantages=token_intrinsic,
+                                response_mask=batch.batch["response_mask"],
+                                index=batch.non_tensor_batch["uid"],
+                            )
+
+                        gate, extrinsic_final, success = compute_intrinsic_gate(
+                            extrinsic_scores=extrinsic_scores,
+                            response_mask=batch.batch["response_mask"],
+                            cfg=self.config.research.intrinsic,
+                        )
+                        gate = gate.to(device=batch.batch["advantages"].device, dtype=batch.batch["advantages"].dtype)
+                        combined_adv = compose_total_advantage(
+                            external_advantages=batch.batch["advantages"],
+                            intrinsic_token_advantages=token_intrinsic,
+                            gate=gate,
+                            eta=self.config.research.intrinsic.eta,
+                            response_mask=batch.batch["response_mask"],
+                        )
+                        batch.batch["advantages"] = combined_adv
+                        metrics["research/intrinsic/eta"] = float(self.config.research.intrinsic.eta)
+                        metrics["research/intrinsic/gate_mean"] = gate.float().mean().item()
+                        metrics["research/intrinsic/extrinsic_final_mean"] = extrinsic_final.mean().item()
+                        metrics["research/intrinsic/success_rate_binary"] = success.float().mean().item()
+                        metrics["research/intrinsic/token_adv_mean"] = VF.masked_mean(
+                            token_intrinsic, mask=batch.batch["response_mask"], dim=-1
+                        ).mean().item()
+                        metrics["research/intrinsic/combined_adv_mean"] = VF.masked_mean(
+                            combined_adv, mask=batch.batch["response_mask"], dim=-1
+                        ).mean().item()
 
                 # update critic
                 if self.use_critic:

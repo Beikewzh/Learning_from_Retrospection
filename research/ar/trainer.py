@@ -83,6 +83,7 @@ class ARTrainOutput:
     checkpoint_path: str
     train_loss: float
     steps: int
+    global_step: int
 
 
 class ARTrainer:
@@ -171,7 +172,7 @@ class ARTrainer:
         os.replace(tmp_path, ckpt_path)
         torch.save(payload, latest_path)
 
-        return ARTrainOutput(checkpoint_path=ckpt_path, train_loss=mean_loss, steps=seen_steps)
+        return ARTrainOutput(checkpoint_path=ckpt_path, train_loss=mean_loss, steps=seen_steps, global_step=global_step)
 
     def train_from_sequence_paths(self, sequence_paths: list[str | os.PathLike[str]], global_step: int) -> ARTrainOutput | None:
         if len(sequence_paths) < self.config.min_buffer_samples:
@@ -242,4 +243,4 @@ class ARTrainer:
         os.replace(tmp_path, ckpt_path)
         torch.save(payload, latest_path)
 
-        return ARTrainOutput(checkpoint_path=ckpt_path, train_loss=mean_loss, steps=seen_steps)
+        return ARTrainOutput(checkpoint_path=ckpt_path, train_loss=mean_loss, steps=seen_steps, global_step=global_step)

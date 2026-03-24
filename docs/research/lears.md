@@ -2,6 +2,9 @@
 
 This document is the source-of-truth for the current LeaRS implementation in this repo.
 
+> Update: for the latest async AR + token-level latent GRPO shaping details, see
+> `docs/research/lears_async_token_grpo.md`.
+
 ## 1. What is implemented
 
 LeaRS is integrated directly into the PPO loop (online-only behavior):

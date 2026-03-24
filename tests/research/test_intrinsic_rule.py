@@ -15,21 +15,22 @@
 import torch
 
 from research.config import IntrinsicConfig
-from research.intrinsic.reward_rule import RunningZScore, apply_intrinsic_rule
+from research.intrinsic.reward_rule import (
+    RunningZScore,
+    apply_intrinsic_rule,
+    compose_total_advantage,
+    compute_intrinsic_gate,
+)
 
 
-def test_weighted_additive_outcome_gating_dense():
-    ssl_error = torch.tensor([[1.0, 2.0, 0.0], [1.0, 1.0, 1.0]])
-    response_mask = torch.tensor([[1, 1, 0], [1, 1, 1]])
-    extrinsic_scores = torch.tensor([[0.4, 0.4, 0.0], [0.0, -0.2, -0.2]])
+def test_per_sequence_zscore_dense():
+    ssl_error = torch.tensor([[1.0, 2.0, 3.0, 0.0], [2.0, 2.0, 2.0, 2.0]])
+    response_mask = torch.tensor([[1, 1, 1, 0], [1, 1, 1, 1]])
+    extrinsic_scores = torch.tensor([[0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 0.0]])
 
     cfg = IntrinsicConfig(
-        mode="weighted_additive",
-        outcome_gated=True,
-        success_threshold=0.0,
-        lambda_success=0.5,
-        lambda_failure=0.25,
-        normalize="none",
+        normalize_scope="per_sequence_zscore",
+        normalize="per_sequence_zscore",
         clip_value=10.0,
         token_mode="dense",
     )
@@ -42,48 +43,20 @@ def test_weighted_additive_outcome_gating_dense():
         stats=stats,
     )
 
-    expected = torch.tensor([[-0.5, -1.0, 0.0], [0.25, 0.25, 0.25]])
-    assert torch.allclose(intrinsic, expected)
-    assert 0.0 <= metrics["research/intrinsic/success_rate"] <= 1.0
+    expected_first = torch.tensor([-1.2247, 0.0, 1.2247, 0.0])
+    assert torch.allclose(intrinsic[0], expected_first, atol=1e-3)
+    assert torch.allclose(intrinsic[1], torch.zeros(4), atol=1e-6)
+    assert "research/intrinsic/raw_mean" in metrics
+    assert "research/intrinsic/z_std" in metrics
 
 
-def test_last_token_mode_and_clipping():
-    ssl_error = torch.tensor([[10.0, 10.0, 10.0]])
-    response_mask = torch.tensor([[1, 1, 1]])
-    extrinsic_scores = torch.tensor([[-1.0, 0.0, 0.0]])
-
+def test_causal_smoothing_window_two():
+    ssl_error = torch.tensor([[1.0, 3.0, 5.0, 7.0]])
+    response_mask = torch.tensor([[1, 1, 1, 1]])
+    extrinsic_scores = torch.tensor([[0.0, 0.0, 0.0, 0.0]])
     cfg = IntrinsicConfig(
-        mode="weighted_additive",
-        outcome_gated=True,
-        success_threshold=0.0,
-        lambda_success=1.0,
-        lambda_failure=1.0,
-        normalize="none",
-        clip_value=2.0,
-        token_mode="last_token",
-    )
-    stats = RunningZScore()
-    intrinsic, _ = apply_intrinsic_rule(
-        ssl_error=ssl_error,
-        response_mask=response_mask,
-        extrinsic_scores=extrinsic_scores,
-        cfg=cfg,
-        stats=stats,
-    )
-
-    assert torch.allclose(intrinsic, torch.tensor([[0.0, 0.0, 2.0]]))
-
-
-def test_intrinsic_mask_excludes_first_token():
-    ssl_error = torch.tensor([[5.0, 2.0, 4.0]])
-    response_mask = torch.tensor([[1, 1, 1]])
-    intrinsic_mask = torch.tensor([[0, 1, 1]])
-    extrinsic_scores = torch.tensor([[0.0, 0.0, 0.0]])
-
-    cfg = IntrinsicConfig(
-        mode="weighted_additive",
-        outcome_gated=False,
-        lambda_failure=1.0,
+        temporal_smoothing_window=2,
+        normalize_scope="none",
         normalize="none",
         clip_value=10.0,
         token_mode="dense",
@@ -92,10 +65,49 @@ def test_intrinsic_mask_excludes_first_token():
     intrinsic, _ = apply_intrinsic_rule(
         ssl_error=ssl_error,
         response_mask=response_mask,
-        intrinsic_mask=intrinsic_mask,
         extrinsic_scores=extrinsic_scores,
         cfg=cfg,
         stats=stats,
     )
 
-    assert torch.allclose(intrinsic, torch.tensor([[0.0, 2.0, 4.0]]))
+    expected = torch.tensor([[1.0, 2.0, 4.0, 6.0]])
+    assert torch.allclose(intrinsic, expected, atol=1e-5)
+
+
+def test_compute_intrinsic_gate_variants():
+    response_mask = torch.tensor([[1, 1, 1], [1, 1, 1]])
+    extrinsic_scores = torch.tensor([[0.0, 0.0, 1.0], [0.0, 0.0, 0.0]])
+
+    cfg = IntrinsicConfig(gate_mode="failure_only", success_threshold=0.5)
+    gate, _, success = compute_intrinsic_gate(
+        extrinsic_scores=extrinsic_scores,
+        response_mask=response_mask,
+        cfg=cfg,
+    )
+    assert torch.allclose(gate, torch.tensor([0.0, 1.0]))
+    assert torch.allclose(success.float(), torch.tensor([1.0, 0.0]))
+
+    cfg = IntrinsicConfig(gate_mode="asymmetric", lambda_success_gate=0.2, success_threshold=0.5)
+    gate, _, _ = compute_intrinsic_gate(
+        extrinsic_scores=extrinsic_scores,
+        response_mask=response_mask,
+        cfg=cfg,
+    )
+    assert torch.allclose(gate, torch.tensor([-0.2, 1.0]))
+
+
+def test_compose_total_advantage_respects_mask_and_gate():
+    external = torch.tensor([[1.0, 1.0, 1.0], [-0.5, -0.5, -0.5]])
+    intrinsic = torch.tensor([[2.0, 0.0, -2.0], [3.0, 3.0, 3.0]])
+    gate = torch.tensor([0.0, 1.0])
+    response_mask = torch.tensor([[1, 1, 0], [1, 0, 0]])
+    total = compose_total_advantage(
+        external_advantages=external,
+        intrinsic_token_advantages=intrinsic,
+        gate=gate,
+        eta=0.1,
+        response_mask=response_mask,
+    )
+
+    expected = torch.tensor([[1.0, 1.0, 0.0], [-0.2, 0.0, 0.0]])
+    assert torch.allclose(total, expected, atol=1e-6)
