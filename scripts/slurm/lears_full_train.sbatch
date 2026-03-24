@@ -65,7 +65,19 @@ if [[ "${USE_SINGULARITY}" == "1" ]]; then
             source /etc/profile >/dev/null 2>&1 || true
             set -u
         fi
+        # Some clusters do not expose `module` in non-login batch shells.
+        # Try common module init scripts before attempting module loads.
+        if ! command -v module >/dev/null 2>&1; then
+            set +u
+            # shellcheck source=/dev/null
+            source /etc/profile.d/modules.sh >/dev/null 2>&1 || true
+            # shellcheck source=/dev/null
+            source /usr/share/modules/init/bash >/dev/null 2>&1 || true
+            set -u
+        fi
         if command -v module >/dev/null 2>&1; then
+            module load apptainer >/dev/null 2>&1 || true
+            module load apptainer/1 >/dev/null 2>&1 || true
             module load singularity/3.7.1 >/dev/null 2>&1 || true
         fi
         if command -v singularity >/dev/null 2>&1; then

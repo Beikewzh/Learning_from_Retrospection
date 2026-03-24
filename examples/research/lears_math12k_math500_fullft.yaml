@@ -35,7 +35,7 @@ worker:
       enable_gradient_checkpointing: true
       trust_remote_code: false
       lora:
-        rank: 64
+        rank: 0
         alpha: 64
         target_modules: all-linear
     optim:
@@ -84,7 +84,7 @@ trainer:
   total_epochs: 1
   max_steps: null
   project_name: easy_r1
-  experiment_name: qwen3_4b_math12k_math500_lears
+  experiment_name: qwen3_4b_math12k_math500_lears_fullft
   logger: ["file", "wandb"]
   nnodes: 1
   n_gpus_per_node: 1
