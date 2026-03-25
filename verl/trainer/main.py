@@ -95,6 +95,12 @@ def main():
     if hasattr(cli_args, "config"):
         config_path = cli_args.pop("config", None)
         file_config = OmegaConf.load(config_path)
+        # Strip launcher-only top-level keys (e.g. _lears_launcher) not in PPOConfig struct.
+        file_cfg_dict = OmegaConf.to_container(file_config, resolve=False)
+        for k in list(file_cfg_dict.keys()):
+            if k.startswith("_lears_"):
+                del file_cfg_dict[k]
+        file_config = OmegaConf.create(file_cfg_dict)
         default_config = OmegaConf.merge(default_config, file_config)
 
     ppo_config = OmegaConf.merge(default_config, cli_args)
