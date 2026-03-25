@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=rorqual-ar-length
+#SBATCH --job-name=tamia-ar-length
 #SBATCH --account=aip-dprecup
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1

@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=rorqual-lears-intrinsic
+#SBATCH --job-name=tamia-lears-intrinsic
 #SBATCH --account=aip-dprecup
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
