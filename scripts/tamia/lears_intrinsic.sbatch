@@ -6,7 +6,7 @@
 #SBATCH --cpus-per-task=24
 #SBATCH --mem=80G
 #SBATCH --gres=gpu:4
-#SBATCH --time=24:00:00
+#SBATCH --time=12:00:00
 #SBATCH --output=slurm_logs/slurm-%x-%j.out
 
 set -euo pipefail
@@ -17,7 +17,7 @@ mkdir -p slurm_logs
 
 module load StdEnv/2023 apptainer/1.3.5
 
-RUN_ID="rorqual_lears_intrinsic_$(date +%Y%m%d_%H%M%S)"
+RUN_ID="tamia_lears_intrinsic_$(date +%Y%m%d_%H%M%S)"
 
 exec apptainer exec --nv \
   --bind "${REPO}:/workspace" \
@@ -31,8 +31,10 @@ exec apptainer exec --nv \
   bash -c "cd /workspace && python -m verl.trainer.main \
     config=examples/research/rorqual/lears_intrinsic_math12k.yaml \
     worker.actor.model.model_path=/workspace/models/Qwen__Qwen3-4B \
+    'data.train_files=/workspace/data/math12k/train.parquet' \
+    'data.val_files=/workspace/data/math500/test.parquet' \
     trainer.n_gpus_per_node=4 \
-    trainer.total_epochs=2 \
+    trainer.total_epochs=1 \
     trainer.max_steps=null \
     research.ar.start_after_steps=375 \
     trainer.save_checkpoint_path=/workspace/checkpoints/COMP767/${RUN_ID} \
