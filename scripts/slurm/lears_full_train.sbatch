@@ -29,14 +29,23 @@ PYTHON_BIN="${PYTHON_BIN:-python3}"
 USE_SINGULARITY="${USE_SINGULARITY:-1}"
 DRY_RUN="${DRY_RUN:-0}"
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT_FROM_SCRIPT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 if [[ -n "${REPO_ROOT:-}" ]]; then
     REPO_ROOT="$(cd "${REPO_ROOT}" && pwd)"
 elif [[ -n "${SLURM_SUBMIT_DIR:-}" ]]; then
-    REPO_ROOT="$(cd "${SLURM_SUBMIT_DIR}" && pwd)"
+    SUBMIT_DIR="$(cd "${SLURM_SUBMIT_DIR}" && pwd)"
+    # salloc/sbatch set SLURM_SUBMIT_DIR to the cwd at submit time; that is often $HOME,
+    # not this repo. Prefer the repo inferred from this script when submit dir is wrong.
+    if [[ -f "${SUBMIT_DIR}/pyproject.toml" && -d "${SUBMIT_DIR}/verl" ]]; then
+        REPO_ROOT="${SUBMIT_DIR}"
+    else
+        REPO_ROOT="${REPO_ROOT_FROM_SCRIPT}"
+    fi
 else
-    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+    REPO_ROOT="${REPO_ROOT_FROM_SCRIPT}"
 fi
+unset REPO_ROOT_FROM_SCRIPT
 cd "${REPO_ROOT}"
 mkdir -p "${REPO_ROOT}/slurm_logs"
 
@@ -97,8 +106,36 @@ if [[ "${USE_SINGULARITY}" == "1" ]]; then
 fi
 
 BASE_CONFIG="${BASE_CONFIG:-examples/research/lears_gsm8k.yaml}"
-CACHE_ROOT="${CACHE_ROOT:-${REPO_ROOT}/.cache}"
-SAVE_ROOT="${SAVE_ROOT:-${REPO_ROOT}/checkpoints/${WANDB_PROJECT_NAME}/lears_full}"
+# Keep HF cache + checkpoints on scratch: if the repo lives under $SCRATCH, use paths inside the
+# repo (visible as /workspace/... in Apptainer). If the repo is under $HOME but $SCRATCH is set,
+# use a dedicated tree under $SCRATCH (extra bind into the container in run_shell_local).
+if [[ -z "${CACHE_ROOT:-}" ]]; then
+    if [[ -n "${SCRATCH:-}" ]]; then
+        _repo_abs="$(cd "${REPO_ROOT}" && pwd -P)"
+        _scratch_abs="$(cd "${SCRATCH}" && pwd -P)"
+        if [[ "${_repo_abs}" == "${_scratch_abs}" || "${_repo_abs}" == "${_scratch_abs}"/* ]]; then
+            CACHE_ROOT="${REPO_ROOT}/.cache"
+        else
+            CACHE_ROOT="${SCRATCH}/Learning_from_Retrospection/.cache"
+        fi
+    else
+        CACHE_ROOT="${REPO_ROOT}/.cache"
+    fi
+fi
+if [[ -z "${SAVE_ROOT:-}" ]]; then
+    if [[ -n "${SCRATCH:-}" ]]; then
+        _repo_abs="$(cd "${REPO_ROOT}" && pwd -P)"
+        _scratch_abs="$(cd "${SCRATCH}" && pwd -P)"
+        if [[ "${_repo_abs}" == "${_scratch_abs}" || "${_repo_abs}" == "${_scratch_abs}"/* ]]; then
+            SAVE_ROOT="${REPO_ROOT}/checkpoints/${WANDB_PROJECT_NAME}/lears_full"
+        else
+            SAVE_ROOT="${SCRATCH}/Learning_from_Retrospection/checkpoints/${WANDB_PROJECT_NAME}/lears_full"
+        fi
+    else
+        SAVE_ROOT="${REPO_ROOT}/checkpoints/${WANDB_PROJECT_NAME}/lears_full"
+    fi
+fi
+unset _repo_abs _scratch_abs 2>/dev/null || true
 mkdir -p "${CACHE_ROOT}" "${SAVE_ROOT}"
 
 export HF_HOME="${HF_HOME:-${CACHE_ROOT}/huggingface}"
@@ -109,6 +146,21 @@ export XDG_CACHE_HOME="${XDG_CACHE_HOME:-${CACHE_ROOT}}"
 export TORCH_HOME="${TORCH_HOME:-${CACHE_ROOT}/torch}"
 export TRANSFORMERS_CACHE="${TRANSFORMERS_CACHE:-${HF_HUB_CACHE}}"
 mkdir -p "${HF_HUB_CACHE}" "${HF_DATASETS_CACHE}" "${TORCH_HOME}"
+
+# Apptainer: map host CACHE_ROOT into the container (same as /workspace/.cache when cache is in-repo).
+RUNTIME_CACHE_IN_CONTAINER="${CACHE_ROOT}"
+APPTAINER_CACHE_BIND=()
+if [[ "${USE_SINGULARITY}" == "1" ]]; then
+    _cr_abs="$(cd "${CACHE_ROOT}" && pwd -P)"
+    _r_abs="$(cd "${REPO_ROOT}" && pwd -P)"
+    if [[ "${_cr_abs}" == "${_r_abs}" || "${_cr_abs}" == "${_r_abs}"/* ]]; then
+        RUNTIME_CACHE_IN_CONTAINER="/workspace${_cr_abs#${_r_abs}}"
+    else
+        RUNTIME_CACHE_IN_CONTAINER="/mnt/lfr_scratch_cache"
+        APPTAINER_CACHE_BIND=(--bind "${_cr_abs}:${RUNTIME_CACHE_IN_CONTAINER}")
+    fi
+    unset _cr_abs _r_abs
+fi
 
 to_runtime_path() {
     local path="$1"
@@ -125,21 +177,25 @@ run_shell_local() {
         local env_args=(
             --env "WANDB_PROJECT_NAME=${WANDB_PROJECT_NAME}"
             --env "WANDB_ENTITY=${WANDB_ENTITY}"
-            --env "HF_HOME=/workspace/.cache/huggingface"
-            --env "HF_HUB_CACHE=/workspace/.cache/huggingface/hub"
-            --env "HUGGINGFACE_HUB_CACHE=/workspace/.cache/huggingface/hub"
-            --env "HF_DATASETS_CACHE=/workspace/.cache/huggingface/datasets"
-            --env "XDG_CACHE_HOME=/workspace/.cache"
-            --env "TORCH_HOME=/workspace/.cache/torch"
-            --env "TRANSFORMERS_CACHE=/workspace/.cache/huggingface/hub"
+            --env "HF_HOME=${RUNTIME_CACHE_IN_CONTAINER}/huggingface"
+            --env "HF_HUB_CACHE=${RUNTIME_CACHE_IN_CONTAINER}/huggingface/hub"
+            --env "HUGGINGFACE_HUB_CACHE=${RUNTIME_CACHE_IN_CONTAINER}/huggingface/hub"
+            --env "HF_DATASETS_CACHE=${RUNTIME_CACHE_IN_CONTAINER}/huggingface/datasets"
+            --env "XDG_CACHE_HOME=${RUNTIME_CACHE_IN_CONTAINER}"
+            --env "TORCH_HOME=${RUNTIME_CACHE_IN_CONTAINER}/torch"
+            --env "TRANSFORMERS_CACHE=${RUNTIME_CACHE_IN_CONTAINER}/huggingface/hub"
             --env "PYTHONPATH=/workspace"
+            --env "REPO_ROOT=/workspace"
+            --env "SCRATCH=${SCRATCH:-}"
             --env "WANDB_RUN_GROUP=${WANDB_RUN_GROUP:-}"
             --env "WANDB_JOB_TYPE=${WANDB_JOB_TYPE:-}"
         )
         local pass_vars=(
-            WANDB_API_KEY HF_TOKEN HF_ENDPOINT
+            WANDB_API_KEY HF_TOKEN HF_ENDPOINT WANDB_MODE
+            HF_HUB_OFFLINE HF_DATASETS_OFFLINE TRANSFORMERS_OFFLINE
             HTTP_PROXY HTTPS_PROXY NO_PROXY http_proxy https_proxy no_proxy
             RAY_ADDRESS RAY_USAGE_STATS_ENABLED
+            BASE_CONFIG TRAINER_N_GPUS_PER_NODE
         )
         local var
         for var in "${pass_vars[@]}"; do
@@ -151,6 +207,7 @@ run_shell_local() {
             --nv \
             --cleanenv \
             --bind "${REPO_ROOT}:/workspace" \
+            "${APPTAINER_CACHE_BIND[@]}" \
             "${env_args[@]}" \
             "${SIF_PATH}" \
             bash -lc "cd /workspace && ${cmd}"
@@ -169,23 +226,40 @@ run_shell_on_node() {
     local node="$1"
     local cmd="$2"
     if [[ "${USE_SINGULARITY}" == "1" ]]; then
+        local opt_pass=()
+        if [[ -n "${WANDB_MODE:-}" ]]; then
+            opt_pass+=(--env "WANDB_MODE=${WANDB_MODE}")
+        fi
+        if [[ -n "${HF_HUB_OFFLINE:-}" ]]; then
+            opt_pass+=(--env "HF_HUB_OFFLINE=${HF_HUB_OFFLINE}")
+        fi
+        if [[ -n "${HF_DATASETS_OFFLINE:-}" ]]; then
+            opt_pass+=(--env "HF_DATASETS_OFFLINE=${HF_DATASETS_OFFLINE}")
+        fi
+        if [[ -n "${TRANSFORMERS_OFFLINE:-}" ]]; then
+            opt_pass+=(--env "TRANSFORMERS_OFFLINE=${TRANSFORMERS_OFFLINE}")
+        fi
         srun --overlap --nodes=1 --ntasks=1 -w "${node}" --kill-on-bad-exit=1 \
             "${CONTAINER_BIN}" exec \
             --nv \
             --cleanenv \
             --bind "${REPO_ROOT}:/workspace" \
+            "${APPTAINER_CACHE_BIND[@]}" \
             --env "WANDB_PROJECT_NAME=${WANDB_PROJECT_NAME}" \
             --env "WANDB_ENTITY=${WANDB_ENTITY}" \
-            --env "HF_HOME=/workspace/.cache/huggingface" \
-            --env "HF_HUB_CACHE=/workspace/.cache/huggingface/hub" \
-            --env "HUGGINGFACE_HUB_CACHE=/workspace/.cache/huggingface/hub" \
-            --env "HF_DATASETS_CACHE=/workspace/.cache/huggingface/datasets" \
-            --env "XDG_CACHE_HOME=/workspace/.cache" \
-            --env "TORCH_HOME=/workspace/.cache/torch" \
-            --env "TRANSFORMERS_CACHE=/workspace/.cache/huggingface/hub" \
+            --env "HF_HOME=${RUNTIME_CACHE_IN_CONTAINER}/huggingface" \
+            --env "HF_HUB_CACHE=${RUNTIME_CACHE_IN_CONTAINER}/huggingface/hub" \
+            --env "HUGGINGFACE_HUB_CACHE=${RUNTIME_CACHE_IN_CONTAINER}/huggingface/hub" \
+            --env "HF_DATASETS_CACHE=${RUNTIME_CACHE_IN_CONTAINER}/huggingface/datasets" \
+            --env "XDG_CACHE_HOME=${RUNTIME_CACHE_IN_CONTAINER}" \
+            --env "TORCH_HOME=${RUNTIME_CACHE_IN_CONTAINER}/torch" \
+            --env "TRANSFORMERS_CACHE=${RUNTIME_CACHE_IN_CONTAINER}/huggingface/hub" \
             --env "PYTHONPATH=/workspace" \
+            --env "REPO_ROOT=/workspace" \
+            --env "SCRATCH=${SCRATCH:-}" \
             --env "RAY_ADDRESS=${RAY_ADDRESS:-}" \
             --env "RAY_USAGE_STATS_ENABLED=${RAY_USAGE_STATS_ENABLED:-0}" \
+            "${opt_pass[@]}" \
             "${SIF_PATH}" \
             bash -lc "cd /workspace && ${cmd}"
     else
@@ -273,10 +347,18 @@ PY
 
 print_startup_summary() {
     log "===== LeaRS Full Training Summary ====="
+    if [[ "${LEARS_FROZEN_YAML:-0}" == "1" ]]; then
+        log "Config: LEARS_FROZEN_YAML=1 — training hyperparameters come from BASE_CONFIG=${BASE_CONFIG}; launcher only adds warmup-aligned start_after_steps, tqdm off, Slurm topology, save dir, and optional MODEL_PATH."
+    fi
     log "Lifecycle: single trainer process (online LeaRS), no external phase restarts."
     log "AR cadence: start_after_steps=${WARMUP_STEPS}, train_every_n_steps=${ONLINE_AR_TRAIN_EVERY_N_STEPS}"
     log "Topology: allocated_nodes=${NNODES_ALLOC}, trainer.nnodes=${TRAINER_NNODES}, trainer.n_gpus_per_node=${TRAINER_N_GPUS_PER_NODE}"
     log "Paths: REPO_ROOT=${REPO_ROOT}, SAVE_ROOT=${SAVE_ROOT}, RUN_SAVE_DIR=${RUN_SAVE_DIR}"
+    if [[ -n "${MODEL_PATH:-}" ]]; then
+        log "LLM: MODEL_PATH=${MODEL_PATH} (overrides base config)"
+    else
+        log "LLM: MODEL_PATH unset (using worker.actor.model.model_path from base config)"
+    fi
     log "Container: USE_SINGULARITY=${USE_SINGULARITY}, SIF_PATH=${SIF_PATH}, PYTHON_BIN=${PYTHON_BIN}"
     log "Schedule mode: ${SCHEDULE_MODE}"
     if [[ "${SCHEDULE_MODE}" == "epoch" ]]; then
@@ -302,11 +384,12 @@ print_startup_summary() {
 run_online_training() {
     export WANDB_RUN_GROUP="${RUN_ID}"
     export WANDB_JOB_TYPE="online_single_process"
+    TRAINER_LOGGER_JSON="${TRAINER_LOGGER_JSON:-[\"file\",\"wandb\"]}"
     run_python -m verl.trainer.main \
         "${COMMON_ARGS[@]}" \
         "trainer.max_steps=${TOTAL_STEPS}" \
         "trainer.experiment_name=${RUN_ID}_online" \
-        "trainer.logger=[\"file\",\"wandb\"]" \
+        "trainer.logger=${TRAINER_LOGGER_JSON}" \
         "trainer.project_name=${WANDB_PROJECT_NAME}" \
         "trainer.nnodes=${TRAINER_NNODES}" \
         "trainer.n_gpus_per_node=${TRAINER_N_GPUS_PER_NODE}" \
@@ -389,8 +472,8 @@ if [[ "${TRAINER_NNODES}" != "1" && "${TRAINER_NNODES}" != "2" ]]; then
     echo "trainer.nnodes must be 1 or 2. Got ${TRAINER_NNODES}." >&2
     exit 1
 fi
-if [[ "${TRAINER_NNODES}" == "1" && "${TRAINER_N_GPUS_PER_NODE}" != "1" && "${TRAINER_N_GPUS_PER_NODE}" != "8" ]]; then
-    echo "1-node mode supports trainer.n_gpus_per_node in {1,8}. Got ${TRAINER_N_GPUS_PER_NODE}." >&2
+if [[ "${TRAINER_NNODES}" == "1" && "${TRAINER_N_GPUS_PER_NODE}" != "1" && "${TRAINER_N_GPUS_PER_NODE}" != "2" && "${TRAINER_N_GPUS_PER_NODE}" != "4" && "${TRAINER_N_GPUS_PER_NODE}" != "8" ]]; then
+    echo "1-node mode supports trainer.n_gpus_per_node in {1,2,4,8}. Got ${TRAINER_N_GPUS_PER_NODE}." >&2
     exit 1
 fi
 if [[ "${TRAINER_NNODES}" == "2" && "${TRAINER_N_GPUS_PER_NODE}" != "4" ]]; then
@@ -478,6 +561,18 @@ case "${VARIANT}" in
         exit 1
         ;;
 esac
+
+LEARS_FROZEN_YAML="${LEARS_FROZEN_YAML:-0}"
+if [[ "${LEARS_FROZEN_YAML}" == "1" ]]; then
+    log "LEARS_FROZEN_YAML=1: exporting launcher env from merged ${BASE_CONFIG} (see scripts/slurm/sync_lears_env_from_yaml.py). Hydra will use that YAML as the full config."
+    # Use the same Python environment as training (Apptainer when USE_SINGULARITY=1); requires BASE_CONFIG + TRAINER_N_GPUS_PER_NODE in the container env.
+    SYNC_OUT="$(run_python scripts/slurm/sync_lears_env_from_yaml.py)" || {
+        echo "sync_lears_env_from_yaml.py failed." >&2
+        exit 1
+    }
+    # shellcheck disable=SC1090
+    eval "${SYNC_OUT}"
+fi
 
 SCHEDULE_MODE="${SCHEDULE_MODE:-epoch}"
 if [[ "${SCHEDULE_MODE}" != "epoch" && "${SCHEDULE_MODE}" != "step" ]]; then
@@ -607,71 +702,92 @@ RUN_SAVE_DIR="${SAVE_ROOT}/${RUN_ID}"
 mkdir -p "${RUN_SAVE_DIR}"
 RUN_SAVE_DIR_RUNTIME="$(to_runtime_path "${RUN_SAVE_DIR}")"
 
-COMMON_ARGS=(
-    "config=${BASE_CONFIG_RUNTIME}"
-    "data.dataset_preset=${DATASET_PRESET}"
-    "data.train_files=${TRAIN_FILES}"
-    "data.val_files=${VAL_FILES}"
-    "data.prompt_key=${PROMPT_KEY}"
-    "data.answer_key=${ANSWER_KEY}"
-    "data.format_prompt=${FORMAT_PROMPT_RUNTIME}"
-    "research.enabled=true"
-    "research.latent.include_prompt=false"
-    "research.buffer.max_train_samples=${AR_MAX_SAMPLES}"
-    "research.ar.device=${AR_DEVICE}"
-    "research.ar.max_seq_len=${MAX_RESPONSE_LENGTH}"
-    "research.ar.d_model=${AR_D_MODEL}"
-    "research.ar.n_layers=${AR_N_LAYERS}"
-    "research.ar.n_heads=${AR_N_HEADS}"
-    "research.ar.dropout=${AR_DROPOUT}"
-    "research.ar.batch_size=${AR_BATCH_SIZE}"
-    "research.ar.lr=${AR_LR}"
-    "research.ar.train_steps=${AR_TRAIN_STEPS}"
-    "research.ar.min_buffer_samples=${AR_MIN_BUFFER_SAMPLES}"
-    "research.ar.start_after_steps=${WARMUP_STEPS}"
-    "research.ar.train_every_n_steps=${ONLINE_AR_TRAIN_EVERY_N_STEPS}"
-    "research.ar.window_intervals=${AR_WINDOW_INTERVALS}"
-    "research.ar.window_interval_steps=${AR_WINDOW_INTERVAL_STEPS}"
-    "research.ar.max_age_steps=${AR_MAX_AGE_STEPS}"
-    "research.ar.stale_action=${AR_STALE_ACTION}"
-    "research.ar.async_enabled=${AR_ASYNC_ENABLED}"
-    "research.ar.async_queue_size=${AR_ASYNC_QUEUE_SIZE}"
-    "research.ar.reload_every_n_steps=${AR_RELOAD_EVERY_N_STEPS}"
-    "research.intrinsic.lambda_success=${LAMBDA_SUCCESS}"
-    "research.intrinsic.lambda_failure=${LAMBDA_FAILURE}"
-    "research.intrinsic.eta=${INTRINSIC_ETA}"
-    "research.intrinsic.gate_mode=${INTRINSIC_GATE_MODE}"
-    "research.intrinsic.lambda_success_gate=${INTRINSIC_LAMBDA_SUCCESS_GATE}"
-    "research.intrinsic.temporal_smoothing_window=${INTRINSIC_SMOOTHING_WINDOW}"
-    "research.intrinsic.normalize_scope=${INTRINSIC_NORMALIZE_SCOPE}"
-    "research.intrinsic.group_norm_per_timestep=${INTRINSIC_GROUP_NORM_PER_TIMESTEP}"
-    "research.intrinsic.clip_value=${INTRINSIC_CLIP_VALUE}"
-    "research.buffer.flush_every_n_steps=${BUFFER_FLUSH_EVERY_N_STEPS}"
-    "research.tracing.enabled=${TRACE_ENABLED}"
-    "research.tracing.flush_every_n_steps=${TRACE_FLUSH_EVERY_N_STEPS}"
-    "research.tracing.retention_mode=${TRACE_RETENTION_MODE}"
-    "research.tracing.max_disk_gb=${TRACE_MAX_DISK_GB}"
-    "research.tracing.sample_rate=${TRACE_SAMPLE_RATE}"
-    "research.tracing.save_tokens=${TRACE_SAVE_TOKENS}"
-    "research.tracing.save_decoded_text=${TRACE_SAVE_DECODED_TEXT}"
-    "research.tracing.save_latents=${TRACE_SAVE_LATENTS}"
-    "research.tracing.save_ar_error=${TRACE_SAVE_AR_ERROR}"
-    "data.max_prompt_length=${MAX_PROMPT_LENGTH}"
-    "data.max_response_length=${MAX_RESPONSE_LENGTH}"
-    "data.rollout_batch_size=${ROLLOUT_BATCH_SIZE}"
-    "worker.actor.global_batch_size=${ACTOR_GLOBAL_BATCH_SIZE}"
-    "worker.rollout.n=${ROLLOUT_N}"
-    "worker.rollout.tensor_parallel_size=${ROLLOUT_TP_SIZE}"
-    "worker.rollout.val_override_config.temperature=0.0"
-    "worker.rollout.val_override_config.top_p=1.0"
-    "worker.rollout.val_override_config.n=1"
-    "worker.rollout.disable_tqdm=true"
-    "worker.actor.padding_free=false"
-    "trainer.val_freq=${EVAL_FREQ}"
-    "trainer.val_before_train=false"
-    "trainer.save_freq=${SAVE_FREQ}"
-    "trainer.save_limit=3"
-)
+MODEL_PATH="${MODEL_PATH:-}"
+MODEL_PATH_RUNTIME=""
+if [[ -n "${MODEL_PATH}" ]]; then
+    MODEL_PATH_RUNTIME="$(to_runtime_path "${MODEL_PATH}")"
+fi
+
+if [[ "${LEARS_FROZEN_YAML:-0}" == "1" ]]; then
+    # YAML is the source of truth; only pass computed warmup alignment + historical launcher quirks.
+    COMMON_ARGS=(
+        "config=${BASE_CONFIG_RUNTIME}"
+        "research.ar.start_after_steps=${WARMUP_STEPS}"
+        "worker.rollout.disable_tqdm=true"
+    )
+else
+    COMMON_ARGS=(
+        "config=${BASE_CONFIG_RUNTIME}"
+        "data.dataset_preset=${DATASET_PRESET}"
+        "data.train_files=${TRAIN_FILES}"
+        "data.val_files=${VAL_FILES}"
+        "data.prompt_key=${PROMPT_KEY}"
+        "data.answer_key=${ANSWER_KEY}"
+        "data.format_prompt=${FORMAT_PROMPT_RUNTIME}"
+        "research.enabled=true"
+        "research.latent.include_prompt=false"
+        "research.buffer.max_train_samples=${AR_MAX_SAMPLES}"
+        "research.ar.device=${AR_DEVICE}"
+        "research.ar.max_seq_len=${MAX_RESPONSE_LENGTH}"
+        "research.ar.d_model=${AR_D_MODEL}"
+        "research.ar.n_layers=${AR_N_LAYERS}"
+        "research.ar.n_heads=${AR_N_HEADS}"
+        "research.ar.dropout=${AR_DROPOUT}"
+        "research.ar.batch_size=${AR_BATCH_SIZE}"
+        "research.ar.lr=${AR_LR}"
+        "research.ar.train_steps=${AR_TRAIN_STEPS}"
+        "research.ar.min_buffer_samples=${AR_MIN_BUFFER_SAMPLES}"
+        "research.ar.start_after_steps=${WARMUP_STEPS}"
+        "research.ar.train_every_n_steps=${ONLINE_AR_TRAIN_EVERY_N_STEPS}"
+        "research.ar.window_intervals=${AR_WINDOW_INTERVALS}"
+        "research.ar.window_interval_steps=${AR_WINDOW_INTERVAL_STEPS}"
+        "research.ar.max_age_steps=${AR_MAX_AGE_STEPS}"
+        "research.ar.stale_action=${AR_STALE_ACTION}"
+        "research.ar.async_enabled=${AR_ASYNC_ENABLED}"
+        "research.ar.async_queue_size=${AR_ASYNC_QUEUE_SIZE}"
+        "research.ar.reload_every_n_steps=${AR_RELOAD_EVERY_N_STEPS}"
+        "research.intrinsic.lambda_success=${LAMBDA_SUCCESS}"
+        "research.intrinsic.lambda_failure=${LAMBDA_FAILURE}"
+        "research.intrinsic.eta=${INTRINSIC_ETA}"
+        "research.intrinsic.gate_mode=${INTRINSIC_GATE_MODE}"
+        "research.intrinsic.lambda_success_gate=${INTRINSIC_LAMBDA_SUCCESS_GATE}"
+        "research.intrinsic.temporal_smoothing_window=${INTRINSIC_SMOOTHING_WINDOW}"
+        "research.intrinsic.normalize_scope=${INTRINSIC_NORMALIZE_SCOPE}"
+        "research.intrinsic.group_norm_per_timestep=${INTRINSIC_GROUP_NORM_PER_TIMESTEP}"
+        "research.intrinsic.clip_value=${INTRINSIC_CLIP_VALUE}"
+        "research.buffer.flush_every_n_steps=${BUFFER_FLUSH_EVERY_N_STEPS}"
+        "research.tracing.enabled=${TRACE_ENABLED}"
+        "research.tracing.flush_every_n_steps=${TRACE_FLUSH_EVERY_N_STEPS}"
+        "research.tracing.retention_mode=${TRACE_RETENTION_MODE}"
+        "research.tracing.max_disk_gb=${TRACE_MAX_DISK_GB}"
+        "research.tracing.sample_rate=${TRACE_SAMPLE_RATE}"
+        "research.tracing.save_tokens=${TRACE_SAVE_TOKENS}"
+        "research.tracing.save_decoded_text=${TRACE_SAVE_DECODED_TEXT}"
+        "research.tracing.save_latents=${TRACE_SAVE_LATENTS}"
+        "research.tracing.save_ar_error=${TRACE_SAVE_AR_ERROR}"
+        "data.max_prompt_length=${MAX_PROMPT_LENGTH}"
+        "data.max_response_length=${MAX_RESPONSE_LENGTH}"
+        "data.rollout_batch_size=${ROLLOUT_BATCH_SIZE}"
+        "worker.actor.global_batch_size=${ACTOR_GLOBAL_BATCH_SIZE}"
+        "worker.rollout.n=${ROLLOUT_N}"
+        "worker.rollout.tensor_parallel_size=${ROLLOUT_TP_SIZE}"
+        "worker.rollout.val_override_config.temperature=0.0"
+        "worker.rollout.val_override_config.top_p=1.0"
+        "worker.rollout.val_override_config.n=1"
+        "worker.rollout.disable_tqdm=true"
+        "worker.actor.padding_free=false"
+        "trainer.val_freq=${EVAL_FREQ}"
+        "trainer.val_before_train=false"
+        "trainer.save_freq=${SAVE_FREQ}"
+        "trainer.save_limit=3"
+    )
+fi
+if [[ -n "${MODEL_PATH_RUNTIME}" ]]; then
+    COMMON_ARGS+=(
+        "worker.actor.model.model_path=${MODEL_PATH_RUNTIME}"
+        "worker.actor.model.tokenizer_path=${MODEL_PATH_RUNTIME}"
+    )
+fi
 
 BG_PIDS=()
 WORKER_NODES=()

@@ -44,9 +44,48 @@ if [[ "${USE_SINGULARITY}" == "1" ]]; then
     fi
 fi
 
-CACHE_ROOT="${CACHE_ROOT:-${REPO_ROOT}/.cache}"
-SAVE_ROOT="${SAVE_ROOT:-${REPO_ROOT}/checkpoints/${WANDB_PROJECT_NAME}/lears_smoke_1gpu}"
+if [[ -z "${CACHE_ROOT:-}" ]]; then
+    if [[ -n "${SCRATCH:-}" ]]; then
+        _repo_abs="$(cd "${REPO_ROOT}" && pwd -P)"
+        _scratch_abs="$(cd "${SCRATCH}" && pwd -P)"
+        if [[ "${_repo_abs}" == "${_scratch_abs}" || "${_repo_abs}" == "${_scratch_abs}"/* ]]; then
+            CACHE_ROOT="${REPO_ROOT}/.cache"
+        else
+            CACHE_ROOT="${SCRATCH}/Learning_from_Retrospection/.cache"
+        fi
+    else
+        CACHE_ROOT="${REPO_ROOT}/.cache"
+    fi
+fi
+if [[ -z "${SAVE_ROOT:-}" ]]; then
+    if [[ -n "${SCRATCH:-}" ]]; then
+        _repo_abs="$(cd "${REPO_ROOT}" && pwd -P)"
+        _scratch_abs="$(cd "${SCRATCH}" && pwd -P)"
+        if [[ "${_repo_abs}" == "${_scratch_abs}" || "${_repo_abs}" == "${_scratch_abs}"/* ]]; then
+            SAVE_ROOT="${REPO_ROOT}/checkpoints/${WANDB_PROJECT_NAME}/lears_smoke_1gpu"
+        else
+            SAVE_ROOT="${SCRATCH}/Learning_from_Retrospection/checkpoints/${WANDB_PROJECT_NAME}/lears_smoke_1gpu"
+        fi
+    else
+        SAVE_ROOT="${REPO_ROOT}/checkpoints/${WANDB_PROJECT_NAME}/lears_smoke_1gpu"
+    fi
+fi
+unset _repo_abs _scratch_abs 2>/dev/null || true
 mkdir -p "${CACHE_ROOT}/huggingface/hub" "${CACHE_ROOT}/huggingface/datasets" "${CACHE_ROOT}/torch" "${SAVE_ROOT}"
+
+RUNTIME_CACHE_IN_CONTAINER="${CACHE_ROOT}"
+APPTAINER_CACHE_BIND=()
+if [[ "${USE_SINGULARITY}" == "1" ]]; then
+    _cr_abs="$(cd "${CACHE_ROOT}" && pwd -P)"
+    _r_abs="$(cd "${REPO_ROOT}" && pwd -P)"
+    if [[ "${_cr_abs}" == "${_r_abs}" || "${_cr_abs}" == "${_r_abs}"/* ]]; then
+        RUNTIME_CACHE_IN_CONTAINER="/workspace${_cr_abs#${_r_abs}}"
+    else
+        RUNTIME_CACHE_IN_CONTAINER="/mnt/lfr_scratch_cache"
+        APPTAINER_CACHE_BIND=(--bind "${_cr_abs}:${RUNTIME_CACHE_IN_CONTAINER}")
+    fi
+    unset _cr_abs _r_abs
+fi
 
 export HF_HOME="${HF_HOME:-${CACHE_ROOT}/huggingface}"
 export HF_HUB_CACHE="${HF_HUB_CACHE:-${HF_HOME}/hub}"
@@ -122,14 +161,16 @@ run_python() {
         local env_args=(
             --env "WANDB_PROJECT_NAME=${WANDB_PROJECT_NAME}"
             --env "WANDB_ENTITY=${WANDB_ENTITY}"
-            --env "HF_HOME=/workspace/.cache/huggingface"
-            --env "HF_HUB_CACHE=/workspace/.cache/huggingface/hub"
-            --env "HUGGINGFACE_HUB_CACHE=/workspace/.cache/huggingface/hub"
-            --env "HF_DATASETS_CACHE=/workspace/.cache/huggingface/datasets"
-            --env "XDG_CACHE_HOME=/workspace/.cache"
-            --env "TORCH_HOME=/workspace/.cache/torch"
-            --env "TRANSFORMERS_CACHE=/workspace/.cache/huggingface/hub"
+            --env "HF_HOME=${RUNTIME_CACHE_IN_CONTAINER}/huggingface"
+            --env "HF_HUB_CACHE=${RUNTIME_CACHE_IN_CONTAINER}/huggingface/hub"
+            --env "HUGGINGFACE_HUB_CACHE=${RUNTIME_CACHE_IN_CONTAINER}/huggingface/hub"
+            --env "HF_DATASETS_CACHE=${RUNTIME_CACHE_IN_CONTAINER}/huggingface/datasets"
+            --env "XDG_CACHE_HOME=${RUNTIME_CACHE_IN_CONTAINER}"
+            --env "TORCH_HOME=${RUNTIME_CACHE_IN_CONTAINER}/torch"
+            --env "TRANSFORMERS_CACHE=${RUNTIME_CACHE_IN_CONTAINER}/huggingface/hub"
             --env "PYTHONPATH=/workspace"
+            --env "REPO_ROOT=/workspace"
+            --env "SCRATCH=${SCRATCH:-}"
             --env "WANDB_RUN_GROUP=${RUN_ID}"
             --env "WANDB_JOB_TYPE=smoke_online"
         )
@@ -150,6 +191,7 @@ run_python() {
             --nv \
             --cleanenv \
             --bind "${REPO_ROOT}:/workspace" \
+            "${APPTAINER_CACHE_BIND[@]}" \
             "${env_args[@]}" \
             "${SIF_PATH}" \
             bash -lc "cd /workspace && ${cmd}"

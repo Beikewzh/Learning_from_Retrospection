@@ -103,6 +103,8 @@ bash scripts/lears_smoke_1gpu.sh
 
 ## 5. Compute Canada templates
 
+Site-specific batch wrapper (Apptainer module load, scratch cache env): `scripts/slurm/cc/lears_full_train_cc_apptainer.sbatch`. The legacy path `scripts/slurm/lears_full_train_cc_apptainer.sbatch` forwards to the same file.
+
 Set site-specific account/partition/GPU flags explicitly.
 
 1x8 template:

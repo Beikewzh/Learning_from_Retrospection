@@ -82,6 +82,7 @@ Legacy aliases (kept for compatibility):
 `scripts/slurm/lears_full_train.sbatch` supports:
 
 - `1x1` (`trainer.nnodes=1`, `trainer.n_gpus_per_node=1`)
+- `1x2` (`trainer.nnodes=1`, `trainer.n_gpus_per_node=2`, common for interactive smoke)
 - `1x8` (`trainer.nnodes=1`, `trainer.n_gpus_per_node=8`)
 - `2x4` (`trainer.nnodes=2`, `trainer.n_gpus_per_node=4`)
 

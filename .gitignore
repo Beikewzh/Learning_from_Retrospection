@@ -172,8 +172,13 @@ cython_debug/
 # PyPI configuration file
 .pypirc
 
-# pytorch
+# pytorch / model weights
 *.pt
+*.safetensors
+*.bin
+
+# model directories
+models/
 
 # outputs
 outputs/

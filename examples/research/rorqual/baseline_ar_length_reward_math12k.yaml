@@ -1,0 +1,186 @@
+# Self-contained Rorqual experiment C: Math12k + length-penalised GRPO reward + online AR (log/save only).
+# Reward = (accuracy + format) / (T / T_ref), T ≈ response tokens (chars/4), T_ref=256.
+# Shorter correct responses get higher reward; wrong responses stay at 0.
+# AR is fully trained and checkpointed every cadence, but intrinsic term is OFF (eta=0).
+# Full fine-tune (lora.rank=0). Set TRAINER_N_GPUS_PER_NODE in the suite to match Slurm gres.
+#
+# Buffer / AR — finite sliding-window design (all three numbers must stay consistent):
+#   window = window_intervals × train_every_n_steps × (rollout_batch_size × n)
+#          = 2 × 16 × (8 × 4) = 1024 sequences
+#   buffer.max_train_samples = 1024  ← in-memory deque cap; = window, so deque never exceeds RAM budget
+#   ar.train_steps × ar.batch_size   = 120 × 8 = 960  ← ~1 pass over the window per AR run
+#   buffer.max_disk_gb bounds on-disk growth; oldest shards are evicted automatically.
+#
+# Slurm suite only sets cluster/offline paths (HF_*, WANDB, GPUs, MODEL_PATH, LEARS_FROZEN_YAML=1).
+
+_lears_launcher:
+  schedule_mode: epoch
+  total_epochs: 2.0
+  warmup_epochs: 0.25
+  refresh_epochs: 0.25
+
+data:
+  dataset_preset: math12k_math500
+  train_files: ""
+  val_files: ""
+  prompt_key: prompt
+  answer_key: answer
+  format_prompt: null
+  max_prompt_length: 1024
+  max_response_length: 4096
+  rollout_batch_size: 8
+  mini_rollout_batch_size: null
+  val_batch_size: 32
+  shuffle: true
+  seed: 1
+
+algorithm:
+  adv_estimator: grpo
+  disable_kl: false
+  use_kl_loss: true
+  kl_penalty: low_var_kl
+  kl_coef: 1.0e-2
+  online_filtering: false
+
+worker:
+  actor:
+    global_batch_size: 8
+    micro_batch_size_per_device_for_update: 1
+    micro_batch_size_per_device_for_experience: 1
+    max_grad_norm: 1.0
+    padding_free: false
+    dynamic_batching: true
+    ulysses_size: 1
+    model:
+      model_path: Qwen/Qwen3-4B
+      enable_gradient_checkpointing: true
+      trust_remote_code: false
+      lora:
+        rank: 0
+        alpha: 64
+        target_modules: all-linear
+    optim:
+      lr: 1.0e-5
+      weight_decay: 1.0e-2
+      strategy: adamw
+    fsdp:
+      enable_full_shard: true
+      enable_cpu_offload: false
+      enable_rank0_init: true
+      torch_dtype: fp16
+      mp_param_dtype: fp16
+    offload:
+      offload_params: true
+      offload_optimizer: true
+
+  rollout:
+    n: 4
+    temperature: 1.0
+    top_p: 1.0
+    dtype: fp16
+    tensor_parallel_size: 2
+    gpu_memory_utilization: 0.85
+    enforce_eager: false
+    enable_chunked_prefill: false
+    disable_tqdm: false
+    val_override_config:
+      n: 1
+      temperature: 0.0
+      top_p: 1.0
+
+  ref:
+    fsdp:
+      enable_full_shard: true
+      enable_cpu_offload: true
+      enable_rank0_init: true
+      torch_dtype: fp16
+      mp_param_dtype: fp16
+    offload:
+      offload_params: false
+
+  reward:
+    reward_function: ./examples/reward_function/math_length_penalty.py:compute_score
+
+trainer:
+  total_epochs: 1
+  max_steps: null
+  project_name: easy_r1
+  experiment_name: rorqual_baseline_ar_length_reward_math12k_fullft_4gpu
+  logger: ["file", "wandb"]
+  nnodes: 1
+  n_gpus_per_node: 4
+  max_try_make_batch: 20
+  critic_warmup: 0
+  val_freq: 100
+  val_before_train: false
+  val_only: false
+  val_generations_to_log: 0
+  save_freq: 50
+  save_limit: 3
+  save_model_only: false
+  save_checkpoint_path: null
+  load_checkpoint_path: null
+  find_last_checkpoint: true
+
+research:
+  enabled: true
+  checkpoint_subdir: research
+  latent:
+    source: actor_logprob
+    layer_index: -1
+    include_prompt: false
+    dtype: fp16
+    capture_every_n_steps: 1
+  buffer:
+    backend: parquet
+    dir: null
+    shard_max_samples: 512
+    compression: zstd
+    max_disk_gb: 20.0          # evicts oldest shards; ~4 windows of on-disk history
+    max_train_samples: 1024    # in-memory deque cap = window (2×16×32); keeps buffer finite
+    flush_every_n_steps: 8     # flush to disk before each AR run (cadence=16)
+  ar:
+    model_type: tiny_transformer
+    d_model: 256
+    n_layers: 2
+    n_heads: 4
+    dropout: 0.1
+    lr: 1.0e-4
+    batch_size: 8
+    train_steps: 120
+    train_every_n_steps: 16
+    min_buffer_samples: 256
+    device: cuda
+    max_seq_len: 4096
+    num_workers: 0
+    window_intervals: 2
+    async_enabled: true
+    async_queue_size: 1
+    reload_every_n_steps: 1
+  intrinsic:
+    mode: weighted_additive
+    success_threshold: 0.5
+    lambda_success: 0.0
+    lambda_failure: 0.0
+    eta: 0.0                   # intrinsic reward OFF; AR trains but does not affect policy
+    gate_mode: failure_only
+    lambda_success_gate: 0.25
+    temporal_smoothing_window: 3
+    normalize_scope: per_sequence_zscore
+    normalize: per_sequence_zscore
+    clip_value: 3.0
+    token_mode: dense
+    group_norm_per_timestep: false
+  tracing:
+    enabled: true
+    schema_version: v1
+    dir: null
+    flush_every_n_steps: 20
+    compression: zstd
+    save_tokens: true
+    save_decoded_text: true
+    save_latents: true
+    save_ar_error: true
+    retention_mode: keep_all
+    max_disk_gb: 500.0
+    sample_rate: 1.0
