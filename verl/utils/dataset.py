@@ -242,6 +242,7 @@ class RLHFDataset(Dataset):
     def __getitem__(self, index):
         example: dict = self.dataset[index]
         messages = self._build_messages(example)
+        source_prompt = example[self.prompt_key]
         example.pop(self.prompt_key, None)
 
         if self.image_key in example:
@@ -330,5 +331,6 @@ class RLHFDataset(Dataset):
         example["attention_mask"] = attention_mask
         example["position_ids"] = position_ids
         example["raw_prompt_ids"] = raw_prompt_ids
+        example["source_prompt"] = source_prompt
         example["ground_truth"] = example.pop(self.answer_key)
         return example
