@@ -137,10 +137,11 @@ if [[ -z "${MODEL_TAG}" ]]; then
     MODEL_TAG="$(sanitize_model_name "${MODEL_ID}")"
 fi
 if [[ -z "${DATA_PATH}" ]]; then
-    DATA_PATH="${REPO_ROOT}/data/math500_local_${MODEL_TAG}.jsonl"
-fi
-if [[ "${NUM_SHARDS}" -gt 1 ]]; then
-    DATA_PATH="${REPO_ROOT}/data/math500_local_${MODEL_TAG}_limit${LIMIT}.jsonl"
+    if [[ -n "${LIMIT}" ]]; then
+        DATA_PATH="${REPO_ROOT}/data/math500_local_limit${LIMIT}.jsonl"
+    else
+        DATA_PATH="${REPO_ROOT}/data/math500_local.jsonl"
+    fi
 fi
 
 RUNTIME_CACHE_ROOT="$(to_runtime_path "${CACHE_ROOT}")"

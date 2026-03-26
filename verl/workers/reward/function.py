@@ -27,6 +27,8 @@ from .config import RewardConfig
 
 
 class RewardInput(TypedDict):
+    source_prompt: str
+    prompt: str
     response: str
     response_length: int
     ground_truth: str
@@ -51,14 +53,25 @@ class SequentialFunctionRewardManagerMixin:
         reward_metrics = defaultdict(list)
         response_ids = data.batch["responses"]
         response_length = torch.sum(data.batch["response_mask"], dim=-1)
+        raw_prompt_ids_batch = data.non_tensor_batch.get("raw_prompt_ids", None)
+        source_prompt_batch = data.non_tensor_batch.get("source_prompt", None)
         for i in range(len(data)):
             cur_response_length = int(response_length[i].item())  # avoid tensor indexing error
             valid_response_ids = response_ids[i][:cur_response_length]
             response_str = self.tokenizer.decode(
                 valid_response_ids, skip_special_tokens=self.config.skip_special_tokens
             )
+            if raw_prompt_ids_batch is not None:
+                prompt_str = self.tokenizer.decode(
+                    list(raw_prompt_ids_batch[i]), skip_special_tokens=self.config.skip_special_tokens
+                )
+            else:
+                prompt_str = ""
+            source_prompt_str = str(source_prompt_batch[i]) if source_prompt_batch is not None else prompt_str
             score = self.reward_fn(
                 {
+                    "source_prompt": source_prompt_str,
+                    "prompt": prompt_str,
                     "response": response_str,
                     "response_length": cur_response_length,
                     "ground_truth": data.non_tensor_batch["ground_truth"][i],
@@ -78,14 +91,25 @@ class BatchFunctionRewardManagerMixin:
         reward_inputs = []
         response_ids = data.batch["responses"]
         response_length = torch.sum(data.batch["response_mask"], dim=-1)
+        raw_prompt_ids_batch = data.non_tensor_batch.get("raw_prompt_ids", None)
+        source_prompt_batch = data.non_tensor_batch.get("source_prompt", None)
         for i in range(len(data)):
             cur_response_length = int(response_length[i].item())  # avoid tensor indexing error
             valid_response_ids = response_ids[i][:cur_response_length]
             response_str = self.tokenizer.decode(
                 valid_response_ids, skip_special_tokens=self.config.skip_special_tokens
             )
+            if raw_prompt_ids_batch is not None:
+                prompt_str = self.tokenizer.decode(
+                    list(raw_prompt_ids_batch[i]), skip_special_tokens=self.config.skip_special_tokens
+                )
+            else:
+                prompt_str = ""
+            source_prompt_str = str(source_prompt_batch[i]) if source_prompt_batch is not None else prompt_str
             reward_inputs.append(
                 {
+                    "source_prompt": source_prompt_str,
+                    "prompt": prompt_str,
                     "response": response_str,
                     "response_length": cur_response_length,
                     "ground_truth": data.non_tensor_batch["ground_truth"][i],

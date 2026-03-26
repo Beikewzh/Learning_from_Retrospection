@@ -66,7 +66,10 @@ class Runner:
         }
         resource_pool_manager = ResourcePoolManager(resource_pool_spec=resource_pool_spec, mapping=mapping)
 
-        RemoteRewardManager = ray.remote(AutoRewardManager).options(num_cpus=config.worker.reward.num_cpus)
+        RemoteRewardManager = ray.remote(AutoRewardManager).options(
+            num_cpus=config.worker.reward.num_cpus,
+            num_gpus=config.worker.reward.num_gpus,
+        )
         reward_fn = RemoteRewardManager.remote(config.worker.reward, tokenizer)
         val_reward_fn = RemoteRewardManager.remote(config.worker.reward, tokenizer)
 
