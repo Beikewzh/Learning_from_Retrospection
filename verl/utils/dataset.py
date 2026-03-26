@@ -135,6 +135,7 @@ class RLHFDataset(Dataset):
         max_pixels: Optional[int] = None,
         filter_overlong_prompts: bool = True,
         filter_overlong_prompts_workers: int = 16,
+        include_source_prompt: bool = False,
     ):
         self.tokenizer = tokenizer
         self.processor = processor
@@ -148,6 +149,7 @@ class RLHFDataset(Dataset):
         self.truncation = truncation
         self.min_pixels = min_pixels
         self.max_pixels = max_pixels
+        self.include_source_prompt = include_source_prompt
 
         data_path, data_config, data_split = parse_dataset_path(data_path)
 
@@ -331,6 +333,7 @@ class RLHFDataset(Dataset):
         example["attention_mask"] = attention_mask
         example["position_ids"] = position_ids
         example["raw_prompt_ids"] = raw_prompt_ids
-        example["source_prompt"] = source_prompt
+        if self.include_source_prompt:
+            example["source_prompt"] = source_prompt
         example["ground_truth"] = example.pop(self.answer_key)
         return example
