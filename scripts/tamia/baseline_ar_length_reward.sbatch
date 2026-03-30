@@ -2,9 +2,8 @@
 #SBATCH --job-name=tamia-ar-length
 #SBATCH --account=aip-dprecup
 #SBATCH --nodes=1
-#SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=24
-#SBATCH --mem=500G
+#SBATCH --cpus-per-task=48
+#SBATCH --mem=480G
 #SBATCH --gres=gpu:4
 #SBATCH --time=6:00:00
 #SBATCH --output=slurm_logs/slurm-%x-%j.out
