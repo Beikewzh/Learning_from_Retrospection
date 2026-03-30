@@ -151,7 +151,7 @@ research:
     train_steps: 120
     train_every_n_steps: 16
     min_buffer_samples: 256
-    device: cuda
+    device: cpu
     max_seq_len: 4096
     num_workers: 0
     window_intervals: 2

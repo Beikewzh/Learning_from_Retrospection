@@ -191,7 +191,9 @@ class LeaRSManager:
                 continue
             try:
                 output = future.result()
-            except Exception:
+            except Exception as e:
+                import traceback
+                print(f"[LeaRS] AR async training failed: {e}\n{traceback.format_exc()}", flush=True)
                 metrics["research/ar/async_failed"] += 1.0
                 continue
             metrics["research/ar/async_completed"] += 1.0

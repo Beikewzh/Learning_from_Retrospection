@@ -69,11 +69,14 @@ class FileLogger(Logger):
         with open(os.path.join(config["trainer"]["save_checkpoint_path"], "experiment_config.json"), "w") as f:
             json.dump(config, f, indent=2)
 
-        with open(os.path.join(config["trainer"]["save_checkpoint_path"], "experiment_log.jsonl"), "w") as f:
-            pass
+        # Use "a" (append) so metrics from previous runs/requeues are preserved
+        log_path = os.path.join(config["trainer"]["save_checkpoint_path"], "experiment_log.jsonl")
+        if not os.path.exists(log_path):
+            open(log_path, "w").close()
 
-        with open(os.path.join(config["trainer"]["save_checkpoint_path"], "generations.log"), "w") as f:
-            pass
+        gen_path = os.path.join(config["trainer"]["save_checkpoint_path"], "generations.log")
+        if not os.path.exists(gen_path):
+            open(gen_path, "w").close()
 
     def log(self, data: dict[str, Any], step: int) -> None:
         with open(os.path.join(self.config["trainer"]["save_checkpoint_path"], "experiment_log.jsonl"), "a") as f:

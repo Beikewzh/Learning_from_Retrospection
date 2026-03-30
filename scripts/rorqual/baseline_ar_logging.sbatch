@@ -49,7 +49,6 @@ apptainer exec --nv \
     research.ar.start_after_steps=375 \
     trainer.save_checkpoint_path=/workspace/checkpoints/COMP767/${RUN_ID} \
     trainer.find_last_checkpoint=true \
-    trainer.save_model_only=true \
     worker.rollout.disable_tqdm=true \
     trainer.logger='[\"file\",\"wandb\"]' \
     trainer.experiment_name=${RUN_ID}" &

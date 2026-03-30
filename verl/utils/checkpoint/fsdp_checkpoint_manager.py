@@ -26,6 +26,7 @@ from torch.distributed.checkpoint.state_dict import (
     StateDictOptions,
     get_model_state_dict,
     get_state_dict,
+    set_model_state_dict,
     set_state_dict,
 )
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
@@ -66,26 +67,48 @@ class FSDPCheckpointManager(BaseCheckpointManager):
         model_path = os.path.join(path, f"model_world_size_{self.world_size}_rank_{self.rank}.pt")
         optim_path = os.path.join(path, f"optim_world_size_{self.world_size}_rank_{self.rank}.pt")
         extra_path = os.path.join(path, f"extra_state_world_size_{self.world_size}_rank_{self.rank}.pt")
+
         print(f"[rank-{self.rank}]: Loading model from {os.path.abspath(model_path)}.")
-        print(f"[rank-{self.rank}]: Loading optimizer from {os.path.abspath(optim_path)}.")
-        print(f"[rank-{self.rank}]: Loading extra_state from {os.path.abspath(extra_path)}.")
         model_state_dict = torch.load(model_path, weights_only=False)
-        optim_state_dict = torch.load(optim_path, weights_only=False)
-        extra_state_dict = torch.load(extra_path, weights_only=False)
+
+        has_optimizer = os.path.exists(optim_path)
+        has_extra = os.path.exists(extra_path)
+
+        if has_optimizer:
+            print(f"[rank-{self.rank}]: Loading optimizer from {os.path.abspath(optim_path)}.")
+            optim_state_dict = torch.load(optim_path, weights_only=False)
+        else:
+            print(f"[rank-{self.rank}]: No optimizer checkpoint found (model-only save); optimizer state will be fresh.")
+
+        if has_extra:
+            print(f"[rank-{self.rank}]: Loading extra_state from {os.path.abspath(extra_path)}.")
+            extra_state_dict = torch.load(extra_path, weights_only=False)
+        else:
+            print(f"[rank-{self.rank}]: No extra_state checkpoint found (model-only save); lr_scheduler will be fresh.")
 
         state_dict_options = StateDictOptions(cpu_offload=True)
-        set_state_dict(
-            model=self.model,
-            optimizers=self.optimizer,
-            model_state_dict=model_state_dict,
-            optim_state_dict=optim_state_dict,
-            options=state_dict_options,
-        )
-        self.lr_scheduler.load_state_dict(extra_state_dict["lr_scheduler"])
+        if has_optimizer:
+            set_state_dict(
+                model=self.model,
+                optimizers=self.optimizer,
+                model_state_dict=model_state_dict,
+                optim_state_dict=optim_state_dict,
+                options=state_dict_options,
+            )
+        else:
+            # Checkpoint was saved with save_model_only=True — restore model weights only.
+            # Optimizer and lr_scheduler will start fresh from this model state.
+            set_model_state_dict(
+                model=self.model,
+                model_state_dict=model_state_dict,
+                options=state_dict_options,
+            )
 
-        # recover random state
-        if "rng" in extra_state_dict:
-            self.load_rng_state(extra_state_dict["rng"])
+        if has_extra:
+            self.lr_scheduler.load_state_dict(extra_state_dict["lr_scheduler"])
+            # recover random state
+            if "rng" in extra_state_dict:
+                self.load_rng_state(extra_state_dict["rng"])
 
     def save_checkpoint(self, path: str, save_model_only: bool = False):
         path = self.local_mkdir(path)
