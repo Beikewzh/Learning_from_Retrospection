@@ -38,6 +38,7 @@ OVERWRITE="${OVERWRITE:-0}"
 RESUME="${RESUME:-1}"
 FLUSH_EVERY_N_SAMPLES="${FLUSH_EVERY_N_SAMPLES:-1}"
 USE_REASONING_SPAN="${USE_REASONING_SPAN:-1}"
+RUN_SPECTRUM_ONLY_ANALYSIS="${RUN_SPECTRUM_ONLY_ANALYSIS:-0}"
 
 MAX_COMPONENTS="${MAX_COMPONENTS:-64}"
 MIN_SEQ_LEN="${MIN_SEQ_LEN:-4}"
@@ -59,6 +60,7 @@ KEEP_SPILLED_SEQUENCES="${KEEP_SPILLED_SEQUENCES:-0}"
 OUTPUT_BASE="${OUTPUT_BASE:-${REPO_ROOT}/outputs/offline_math500_temp1_k32}"
 RUN_ROOT="${OUTPUT_BASE}/${MODEL_TAG}_limit${LIMIT}"
 MERGED_RUN_DIR="${RUN_ROOT}/merged"
+CANONICAL_ANALYSIS_ROOT="${MERGED_RUN_DIR}/analysis_parallel"
 
 echo "Submitting end-to-end offline pipeline"
 echo "  model_id=${MODEL_ID}"
@@ -67,6 +69,7 @@ echo "  run_root=${RUN_ROOT}"
 echo "  merged_run_dir=${MERGED_RUN_DIR}"
 echo "  num_shards=${NUM_SHARDS}"
 echo "  samples_per_question=${NUM_SAMPLES_PER_QUESTION}"
+echo "  run_spectrum_only_analysis=${RUN_SPECTRUM_ONLY_ANALYSIS}"
 
 predownload_jid=$(sbatch --parsable \
     --job-name="prep-${MODEL_TAG}" \
@@ -93,30 +96,37 @@ collection_merge_jid=$(sbatch --parsable \
     scripts/slurm/offline_merge_math500_model.sbatch)
 echo "Submitted collection merge: ${collection_merge_jid}"
 
-spectrum_analysis_root="${MERGED_RUN_DIR}/spectrum_parallel"
-spectrum_shard_dir="${spectrum_analysis_root}/shards"
-spectrum_merged_dir="${spectrum_analysis_root}/merged"
+if [[ "${RUN_SPECTRUM_ONLY_ANALYSIS}" == "1" ]]; then
+    spectrum_analysis_root="${MERGED_RUN_DIR}/spectrum_parallel"
+    spectrum_shard_dir="${spectrum_analysis_root}/shards"
+    spectrum_merged_dir="${spectrum_analysis_root}/merged"
 
-spectrum_job_ids=()
-for ((shard=0; shard<NUM_SHARDS; shard++)); do
-    jid=$(sbatch --parsable \
-        --dependency="afterok:${collection_merge_jid}" \
-        --job-name="spec-${MODEL_TAG}-s$(printf '%02d' "${shard}")" \
-        --export=ALL,REPO_ROOT="${REPO_ROOT}",RUN_DIR="${MERGED_RUN_DIR}",CACHE_ROOT="${CACHE_ROOT}",OUTPUT_DIR="${spectrum_shard_dir}",USE_REASONING_SPAN="${USE_REASONING_SPAN}",MAX_COMPONENTS="${MAX_COMPONENTS}",MIN_SEQ_LEN="${MIN_SEQ_LEN}",NUM_SHARDS="${NUM_SHARDS}",SHARD_INDEX="${shard}",OVERWRITE="${OVERWRITE}" \
-        scripts/slurm/offline_compute_spectrum_metrics_shard.sbatch)
-    spectrum_job_ids+=("${jid}")
-    echo "Submitted spectrum shard ${shard}: ${jid}"
-done
+    spectrum_job_ids=()
+    for ((shard=0; shard<NUM_SHARDS; shard++)); do
+        jid=$(sbatch --parsable \
+            --dependency="afterok:${collection_merge_jid}" \
+            --job-name="spec-${MODEL_TAG}-s$(printf '%02d' "${shard}")" \
+            --export=ALL,REPO_ROOT="${REPO_ROOT}",RUN_DIR="${MERGED_RUN_DIR}",CACHE_ROOT="${CACHE_ROOT}",OUTPUT_DIR="${spectrum_shard_dir}",USE_REASONING_SPAN="${USE_REASONING_SPAN}",MAX_COMPONENTS="${MAX_COMPONENTS}",MIN_SEQ_LEN="${MIN_SEQ_LEN}",NUM_SHARDS="${NUM_SHARDS}",SHARD_INDEX="${shard}",OVERWRITE="${OVERWRITE}" \
+            scripts/slurm/offline_compute_spectrum_metrics_shard.sbatch)
+        spectrum_job_ids+=("${jid}")
+        echo "Submitted spectrum shard ${shard}: ${jid}"
+    done
 
-spectrum_deps=$(IFS=:; echo "${spectrum_job_ids[*]}")
-spectrum_merge_jid=$(sbatch --parsable \
-    --job-name="merge-spec-${MODEL_TAG}" \
-    --dependency="afterok:${spectrum_deps}" \
-    --export=ALL,REPO_ROOT="${REPO_ROOT}",INPUT_DIR="${spectrum_shard_dir}",OUTPUT_DIR="${spectrum_merged_dir}" \
-    scripts/slurm/offline_merge_ar_spectrum_metrics.sbatch)
-echo "Submitted spectrum merge: ${spectrum_merge_jid}"
+    spectrum_deps=$(IFS=:; echo "${spectrum_job_ids[*]}")
+    spectrum_merge_jid=$(sbatch --parsable \
+        --job-name="merge-spec-${MODEL_TAG}" \
+        --dependency="afterok:${spectrum_deps}" \
+        --export=ALL,REPO_ROOT="${REPO_ROOT}",INPUT_DIR="${spectrum_shard_dir}",OUTPUT_DIR="${spectrum_merged_dir}" \
+        scripts/slurm/offline_merge_ar_spectrum_metrics.sbatch)
+    echo "Submitted spectrum merge: ${spectrum_merge_jid}"
+else
+    spectrum_analysis_root=""
+    spectrum_shard_dir=""
+    spectrum_merged_dir=""
+    echo "Skipping spectrum-only branch; canonical analysis will be ${CANONICAL_ANALYSIS_ROOT}/merged/metrics.jsonl"
+fi
 
-analysis_root="${MERGED_RUN_DIR}/analysis_parallel"
+analysis_root="${CANONICAL_ANALYSIS_ROOT}"
 ar_output_dir="${analysis_root}/ar_model"
 ar_shard_dir="${analysis_root}/shards"
 ar_merged_dir="${analysis_root}/merged"
@@ -152,7 +162,9 @@ echo
 echo "Done submitting."
 echo "Collection merged run:"
 echo "  ${MERGED_RUN_DIR}"
+if [[ "${RUN_SPECTRUM_ONLY_ANALYSIS}" == "1" ]]; then
 echo "Spectrum merged metrics:"
 echo "  ${spectrum_merged_dir}/metrics.jsonl"
-echo "AR merged metrics:"
+fi
+echo "Canonical merged metrics:"
 echo "  ${ar_merged_dir}/metrics.jsonl"

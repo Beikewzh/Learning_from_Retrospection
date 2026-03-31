@@ -1,5 +1,9 @@
 # Offline Latent Collection Workflow
 
+For the canonical end-to-end usage guide, start here:
+
+- [OFFLINE_PIPELINE.md](/network/scratch/p/pingsheng.li/Learning_from_Retrospection/research/offline/OFFLINE_PIPELINE.md)
+
 This workflow is separate from the online LeaRS RL loop. It is for:
 
 1. normalizing a reasoning dataset into a simple JSONL schema,
@@ -7,6 +11,54 @@ This workflow is separate from the online LeaRS RL loop. It is for:
 3. inspecting the resulting latent buffer before later offline analysis.
 
 The online RL training path under `verl.trainer.main` is unchanged.
+
+## Canonical Pipeline
+
+The clean default offline path is now:
+
+1. export `MATH-500` once,
+2. predownload one model once,
+3. collect latent shards in parallel,
+4. merge collection shards,
+5. train AR once on the merged run,
+6. compute AR+spectrum analysis shards in parallel,
+7. merge to one canonical metrics file.
+
+Canonical artifact:
+
+```text
+<run>/merged/analysis_parallel/merged/metrics.jsonl
+```
+
+Example:
+
+```text
+outputs/offline_math500_temp1_k32/qwen_qwen3_4b_limit500/merged/analysis_parallel/merged/metrics.jsonl
+```
+
+The main submit wrapper is:
+
+```bash
+MODEL_ID=Qwen/Qwen3-4B \
+MODEL_TAG=qwen_qwen3_4b \
+NUM_SHARDS=10 \
+NUM_SAMPLES_PER_QUESTION=32 \
+LIMIT=500 \
+TEMPERATURE=1.0 \
+AR_DEVICE=cpu \
+AR_MAX_SAMPLES=20000 \
+AR_TRAIN_STEPS=5000 \
+AR_BATCH_SIZE=8 \
+SPILL_TRAIN_SEQUENCES=1 \
+KEEP_SPILLED_SEQUENCES=0 \
+bash scripts/slurm/submit_offline_model_end_to_end.sh
+```
+
+By default this submits only the canonical AR+spectrum branch. If you explicitly want the older spectrum-only branch too:
+
+```bash
+RUN_SPECTRUM_ONLY_ANALYSIS=1 bash scripts/slurm/submit_offline_model_end_to_end.sh
+```
 
 ## Step 1. Prepare a normalized reasoning JSONL
 
