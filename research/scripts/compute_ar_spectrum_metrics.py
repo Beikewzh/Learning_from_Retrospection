@@ -21,30 +21,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from research.ar import ARScorer
 from research.buffer import ParquetLatentBuffer
 from research.latent.codec import deserialize_latent_tensor
-
-
-def resolve_repo_mounted_path(path_str: str) -> Path:
-    p = Path(path_str).expanduser()
-    p_str = str(p)
-    if p.exists():
-        return p.resolve()
-
-    host_repo = os.environ.get('REPO_ROOT')
-    if host_repo:
-        try:
-            host_repo_path = Path(host_repo).expanduser().resolve()
-            host_repo_str = str(host_repo_path)
-        except Exception:
-            host_repo_path = None
-            host_repo_str = ''
-        if host_repo_str and (p_str == host_repo_str or p_str.startswith(host_repo_str + '/')):
-            rel_str = p_str[len(host_repo_str):].lstrip('/')
-            candidate = PROJECT_ROOT / rel_str
-            return candidate
-
-    if p_str.startswith('/workspace/') or p_str == '/workspace':
-        return p
-    return p
+from research.scripts.offline_utils import resolve_repo_mounted_path
 
 
 def parse_args() -> argparse.Namespace:

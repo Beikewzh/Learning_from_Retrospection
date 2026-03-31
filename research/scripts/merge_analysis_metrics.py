@@ -5,33 +5,9 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 from pathlib import Path
 
-
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-
-
-def resolve_repo_mounted_path(path_str: str) -> Path:
-    p = Path(path_str).expanduser()
-    p_str = str(p)
-    if p.exists():
-        return p.resolve()
-
-    host_repo = os.environ.get('REPO_ROOT')
-    if host_repo:
-        try:
-            host_repo_path = Path(host_repo).expanduser().resolve()
-            host_repo_str = str(host_repo_path)
-        except Exception:
-            host_repo_str = ''
-        if host_repo_str and (p_str == host_repo_str or p_str.startswith(host_repo_str + '/')):
-            rel_str = p_str[len(host_repo_str):].lstrip('/')
-            return PROJECT_ROOT / rel_str
-
-    if p_str.startswith('/workspace/') or p_str == '/workspace':
-        return p
-    return p
+from research.scripts.offline_utils import resolve_repo_mounted_path
 
 
 def load_jsonl(path: Path) -> list[dict]:
