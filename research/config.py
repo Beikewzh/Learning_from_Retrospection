@@ -93,6 +93,7 @@ class ARConfig:
     async_enabled: bool = False
     async_queue_size: int = 1
     reload_every_n_steps: int = 1
+    continue_from_latest: bool = False
 
     def post_init(self):
         if self.model_type not in {"tiny_transformer"}:

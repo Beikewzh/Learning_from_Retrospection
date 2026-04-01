@@ -71,7 +71,7 @@ class Runner:
             num_gpus=config.worker.reward.num_gpus,
         )
         reward_fn = RemoteRewardManager.remote(config.worker.reward, tokenizer)
-        val_reward_fn = RemoteRewardManager.remote(config.worker.reward, tokenizer)
+        val_reward_fn = reward_fn
 
         train_dataloader, val_dataloader = create_dataloader(config.data, tokenizer, processor)
 
