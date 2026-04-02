@@ -4,9 +4,9 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=24
-#SBATCH --mem=240G
+#SBATCH --mem=160G
 #SBATCH --gres=gpu:4
-#SBATCH --time=6:00:00
+#SBATCH --time=3:00:00
 #SBATCH --output=/scratch/p/%u/Learning_from_Retrospection_runs/slurm_logs/slurm-%x-%j.out
 #SBATCH --requeue
 #SBATCH --signal=B:USR1@300
@@ -20,7 +20,9 @@ mkdir -p "${RUN_ROOT}/slurm_logs" "${RUN_ROOT}/checkpoints/tutorial"
 
 module load StdEnv/2023 apptainer/1.3.5 httpproxy
 
-RUN_ID="tamia_tutorial_math_lears_lora_4gpu_${SLURM_JOB_ID}"
+LEARS_ETA="${LEARS_ETA:-0.02}"
+LEARS_ETA_TAG="${LEARS_ETA_TAG:-${LEARS_ETA//./p}}"
+RUN_ID="tamia_tutorial_math_lears_lora_4gpu_eta${LEARS_ETA_TAG}_${SLURM_JOB_ID}"
 
 auto_requeue() {
     echo "$(date): SIGUSR1 received, requeueing ${SLURM_JOB_ID} for checkpoint resume..."
@@ -112,7 +114,7 @@ apptainer exec --nv \
     research.intrinsic.clip_value=3.0 \
     research.intrinsic.token_mode=dense \
     research.intrinsic.epsilon=1e-6 \
-    research.intrinsic.eta=0.02 \
+    research.intrinsic.eta=${LEARS_ETA} \
     research.intrinsic.gate_mode=failure_only \
     research.intrinsic.lambda_success_gate=0.25 \
     research.intrinsic.temporal_smoothing_window=3 \

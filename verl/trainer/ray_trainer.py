@@ -733,6 +733,9 @@ class RayPPOTrainer:
                             cfg=self.config.research.intrinsic,
                         )
                         gate = gate.to(device=batch.batch["advantages"].device, dtype=batch.batch["advantages"].dtype)
+                        scaled_intrinsic = (
+                            float(self.config.research.intrinsic.eta) * gate.unsqueeze(-1) * token_intrinsic
+                        )
                         combined_adv = compose_total_advantage(
                             external_advantages=batch.batch["advantages"],
                             intrinsic_token_advantages=token_intrinsic,
@@ -747,6 +750,12 @@ class RayPPOTrainer:
                         metrics["research/intrinsic/success_rate_binary"] = success.float().mean().item()
                         metrics["research/intrinsic/token_adv_mean"] = VF.masked_mean(
                             token_intrinsic, mask=batch.batch["response_mask"], dim=-1
+                        ).mean().item()
+                        metrics["research/intrinsic/scaled_mean"] = VF.masked_mean(
+                            scaled_intrinsic, mask=batch.batch["response_mask"], dim=-1
+                        ).mean().item()
+                        metrics["research/intrinsic/scaled_abs_mean"] = VF.masked_mean(
+                            scaled_intrinsic.abs(), mask=batch.batch["response_mask"], dim=-1
                         ).mean().item()
                         metrics["research/intrinsic/combined_adv_mean"] = VF.masked_mean(
                             combined_adv, mask=batch.batch["response_mask"], dim=-1

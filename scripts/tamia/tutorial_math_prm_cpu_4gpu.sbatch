@@ -4,7 +4,7 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=24
-#SBATCH --mem=240G
+#SBATCH --mem=120G
 #SBATCH --gres=gpu:4
 #SBATCH --time=6:00:00
 #SBATCH --output=/scratch/p/%u/Learning_from_Retrospection_runs/slurm_logs/slurm-%x-%j.out
