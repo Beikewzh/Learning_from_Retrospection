@@ -18,7 +18,7 @@ RUN_ROOT="${SCRATCH:-/scratch/p/${USER}}/Learning_from_Retrospection_runs"
 cd "${REPO}"
 mkdir -p "${RUN_ROOT}/slurm_logs" "${RUN_ROOT}/checkpoints/tutorial"
 
-module load StdEnv/2023 apptainer/1.3.5 httpproxy
+module load StdEnv/2023 apptainer/1.3.5
 
 RUN_ID="tamia_tutorial_math_grpo_lora_8gpu_${SLURM_JOB_ID}"
 

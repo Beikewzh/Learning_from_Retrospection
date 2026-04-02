@@ -116,7 +116,7 @@ trainer:
   val_only: false
   val_generations_to_log: 0
   save_freq: 50
-  save_limit: 3
+  save_limit: 10
   save_model_only: false
   save_checkpoint_path: null
   load_checkpoint_path: null
@@ -177,10 +177,10 @@ research:
     dir: null
     flush_every_n_steps: 20
     compression: zstd
-    save_tokens: true
-    save_decoded_text: true
-    save_latents: true
-    save_ar_error: true
-    retention_mode: keep_all
-    max_disk_gb: 500.0
+    save_tokens: false
+    save_decoded_text: false
+    save_latents: false        # latents already in AR buffer (bounded at 20GB); trace copies are ~250GB+
+    save_ar_error: false       # ar_error_mean/std scalar stats still always written to records
+    retention_mode: rolling_budget  # keep_all ignores max_disk_gb; rolling_budget enforces it
+    max_disk_gb: 10.0
     sample_rate: 1.0

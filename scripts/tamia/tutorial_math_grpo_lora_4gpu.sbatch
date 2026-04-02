@@ -20,6 +20,8 @@ mkdir -p "${RUN_ROOT}/slurm_logs" "${RUN_ROOT}/checkpoints/tutorial"
 
 module load StdEnv/2023 apptainer/1.3.5 httpproxy
 
+WANDB_API_KEY="e66ab9813b4db8b19c8e"
+
 RUN_ID="tamia_tutorial_math_grpo_lora_4gpu_${SLURM_JOB_ID}"
 
 auto_requeue() {
