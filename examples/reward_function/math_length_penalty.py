@@ -4,14 +4,8 @@ from typing import Any
 from mathruler.grader import extract_boxed_content, grade_answer
 
 
-# Metadata
 REWARD_NAME = "math_length_penalty"
 REWARD_TYPE = "batch"
-
-# Reference token count used for scaling: a response of this length yields reward ≈ accuracy_score.
-# Shorter → higher reward, longer → lower reward.  GRPO normalises within-group anyway, so the
-# absolute scale does not matter; only the relative ordering across rollouts matters.
-_TOKEN_REF = 256
 
 
 def format_reward(response: str) -> float:
@@ -24,28 +18,29 @@ def accuracy_reward(response: str, ground_truth: str) -> float:
     return 1.0 if grade_answer(answer, ground_truth) else 0.0
 
 
-def compute_score(reward_inputs: list[dict[str, Any]], format_weight: float = 0.1) -> list[dict[str, float]]:
+def compute_score(
+    reward_inputs: list[dict[str, Any]],
+    format_weight: float = 0.1,
+    length_threshold: int = 512,
+    length_penalty_per_token: float = 1e-4,
+) -> list[dict[str, float]]:
     scores = []
     for reward_input in reward_inputs:
         response = re.sub(r"\s*(<|>|/)\s*", r"\1", reward_input["response"])
         format_score = format_reward(response)
         accuracy_score = accuracy_reward(response, reward_input["ground_truth"])
-
-        raw = (1 - format_weight) * accuracy_score + format_weight * format_score
-
-        # T ≈ token count (chars / 4 is a standard rough approximation).
-        # Divide raw score by (T / T_ref) so shorter correct responses score higher.
-        # Wrong responses stay at 0 regardless of length.
-        T = max(len(response) / 4.0, 1.0)
-        overall = raw * _TOKEN_REF / T
+        raw_score = (1 - format_weight) * accuracy_score + format_weight * format_score
+        response_length = int(reward_input["response_length"])
+        length_penalty = length_penalty_per_token * max(0, response_length - length_threshold)
+        overall = raw_score - length_penalty
 
         scores.append(
             {
-                "overall": overall,          # length-penalised; used as GRPO reward
-                "accuracy": accuracy_score,  # raw correctness, logged for analysis
+                "overall": overall,
+                "accuracy": accuracy_score,
                 "format": format_score,
-                "length_tokens_approx": T,   # approximate token count, for diagnostics
-                "raw_score": raw,            # pre-penalty score, for diagnostics
+                "length_penalty": length_penalty,
+                "raw_score": raw_score,
             }
         )
 

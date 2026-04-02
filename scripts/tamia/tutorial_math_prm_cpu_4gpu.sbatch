@@ -1,12 +1,12 @@
 #!/bin/bash
-#SBATCH --job-name=tamia-math-grpo-lora-8g
+#SBATCH --job-name=tamia-math-prm-cpu-4g
 #SBATCH --account=aip-tyrell
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=24
-#SBATCH --mem=240G
-#SBATCH --gres=gpu:8
-#SBATCH --time=12:00:00
+#SBATCH --mem=120G
+#SBATCH --gres=gpu:4
+#SBATCH --time=6:00:00
 #SBATCH --output=/scratch/p/%u/Learning_from_Retrospection_runs/slurm_logs/slurm-%x-%j.out
 #SBATCH --requeue
 #SBATCH --signal=B:USR1@300
@@ -18,9 +18,9 @@ RUN_ROOT="${SCRATCH:-/scratch/p/${USER}}/Learning_from_Retrospection_runs"
 cd "${REPO}"
 mkdir -p "${RUN_ROOT}/slurm_logs" "${RUN_ROOT}/checkpoints/tutorial"
 
-module load StdEnv/2023 apptainer/1.3.5
+module load StdEnv/2023 apptainer/1.3.5 httpproxy
 
-RUN_ID="tamia_tutorial_math_grpo_lora_8gpu_${SLURM_JOB_ID}"
+RUN_ID="tamia_tutorial_math_prm_cpu_4gpu_${SLURM_JOB_ID}"
 
 auto_requeue() {
     echo "$(date): SIGUSR1 received, requeueing ${SLURM_JOB_ID} for checkpoint resume..."
@@ -53,6 +53,7 @@ apptainer exec --nv \
     'data.val_files=/workspace/data/math500/test.parquet' \
     data.prompt_key=problem \
     data.answer_key=answer \
+    data.format_prompt=./examples/format_prompt/math_prm_steps.jinja \
     data.max_response_length=1024 \
     data.rollout_batch_size=16 \
     data.val_batch_size=16 \
@@ -62,22 +63,29 @@ apptainer exec --nv \
     worker.actor.optim.lr=1e-6 \
     worker.rollout.tensor_parallel_size=1 \
     worker.rollout.dtype=fp16 \
-    worker.rollout.n=4 \
-    worker.rollout.gpu_memory_utilization=0.5 \
     worker.actor.fsdp.torch_dtype=fp16 \
     worker.actor.fsdp.mp_param_dtype=fp16 \
     worker.ref.fsdp.torch_dtype=fp16 \
     worker.ref.fsdp.mp_param_dtype=fp16 \
-    trainer.n_gpus_per_node=8 \
+    worker.reward.reward_function=./examples/reward_function/math_prm_step_reward.py:compute_score \
+    worker.reward.num_gpus=0.0 \
+    worker.reward.num_cpus=8 \
+    'worker.reward.reward_function_kwargs.prm_model_path=/workspace/models/Qwen__Qwen2.5-Math-PRM-7B' \
+    worker.reward.reward_function_kwargs.prm_weight=0.1 \
+    worker.reward.reward_function_kwargs.format_weight=0.1 \
+    worker.reward.reward_function_kwargs.torch_dtype=float32 \
+    'worker.reward.reward_function_kwargs.device_map=cpu' \
+    trainer.n_gpus_per_node=4 \
     trainer.total_epochs=1 \
-    trainer.max_steps=300 \
+    trainer.max_steps=100 \
     trainer.val_before_train=true \
-    trainer.val_freq=25 \
-    trainer.save_freq=50 \
+    trainer.val_freq=5 \
+    trainer.save_freq=10 \
     trainer.save_checkpoint_path=${RUN_ROOT}/checkpoints/tutorial/${RUN_ID} \
     trainer.find_last_checkpoint=true \
     trainer.logger='[\"file\",\"wandb\"]' \
-    trainer.experiment_name=${RUN_ID}" &
+    trainer.experiment_name=${RUN_ID} \
+    research.enabled=false" &
 
 APPTAINER_PID=$!
 wait "${APPTAINER_PID}" || exit $?

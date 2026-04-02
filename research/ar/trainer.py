@@ -103,6 +103,24 @@ class ARTrainer:
             max_seq_len=self.config.max_seq_len,
         ).to(device)
 
+    def _latest_checkpoint_path(self) -> str:
+        return os.path.join(self.ckpt_dir, "latest.pt")
+
+    def _maybe_load_latest(self, model: TinyLatentAR, latent_dim: int, device: torch.device) -> bool:
+        if not self.config.continue_from_latest:
+            return False
+        latest_path = self._latest_checkpoint_path()
+        if not os.path.exists(latest_path):
+            return False
+
+        payload = torch.load(latest_path, map_location=device, weights_only=False)
+        prev_latent_dim = int(payload.get("latent_dim", -1))
+        if prev_latent_dim != latent_dim:
+            return False
+
+        model.load_state_dict(payload["model_state_dict"], strict=True)
+        return True
+
     def train_from_sequences(self, sequences: list[torch.Tensor], global_step: int) -> ARTrainOutput | None:
         if len(sequences) < self.config.min_buffer_samples:
             return None
@@ -114,6 +132,7 @@ class ARTrainer:
         device = torch.device(self.config.device)
         latent_dim = dataset[0].size(1)
         model = self._build_model(latent_dim=latent_dim, device=device)
+        self._maybe_load_latest(model, latent_dim=latent_dim, device=device)
         model.train()
 
         dataloader = DataLoader(
@@ -159,7 +178,7 @@ class ARTrainer:
         ckpt_name = f"ar_step_{global_step}.pt"
         tmp_path = os.path.join(self.ckpt_dir, ckpt_name + ".tmp")
         ckpt_path = os.path.join(self.ckpt_dir, ckpt_name)
-        latest_path = os.path.join(self.ckpt_dir, "latest.pt")
+        latest_path = self._latest_checkpoint_path()
 
         payload: dict[str, Any] = {
             "model_state_dict": model.state_dict(),
@@ -185,6 +204,7 @@ class ARTrainer:
         device = torch.device(self.config.device)
         latent_dim = dataset[0].size(1)
         model = self._build_model(latent_dim=latent_dim, device=device)
+        self._maybe_load_latest(model, latent_dim=latent_dim, device=device)
         model.train()
 
         dataloader = DataLoader(
@@ -230,7 +250,7 @@ class ARTrainer:
         ckpt_name = f"ar_step_{global_step}.pt"
         tmp_path = os.path.join(self.ckpt_dir, ckpt_name + ".tmp")
         ckpt_path = os.path.join(self.ckpt_dir, ckpt_name)
-        latest_path = os.path.join(self.ckpt_dir, "latest.pt")
+        latest_path = self._latest_checkpoint_path()
 
         payload: dict[str, Any] = {
             "model_state_dict": model.state_dict(),

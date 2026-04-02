@@ -7,6 +7,18 @@ import torch.nn.functional as F
 from mathruler.grader import extract_boxed_content, grade_answer
 from transformers import AutoModel, AutoTokenizer
 
+try:
+    from transformers.cache_utils import DynamicCache
+
+    if not hasattr(DynamicCache, "get_usable_length") and hasattr(DynamicCache, "get_seq_length"):
+        def _get_usable_length(self, new_seq_length: int, layer_idx: int = 0) -> int:
+            seq_length = self.get_seq_length(layer_idx)
+            return int(seq_length) if seq_length is not None else 0
+
+        DynamicCache.get_usable_length = _get_usable_length  # type: ignore[attr-defined]
+except Exception:
+    DynamicCache = None
+
 
 REWARD_NAME = "math_prm_step_reward"
 REWARD_TYPE = "batch"
