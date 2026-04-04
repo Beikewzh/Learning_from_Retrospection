@@ -5,7 +5,7 @@
 #SBATCH --cpus-per-task=24
 #SBATCH --mem=240G
 #SBATCH --gres=gpu:4
-#SBATCH --time=6:00:00
+#SBATCH --time=3:00:00
 #SBATCH --output=slurm_logs/slurm-%x-%j.out
 #SBATCH --requeue
 #SBATCH --signal=B:USR1@300
