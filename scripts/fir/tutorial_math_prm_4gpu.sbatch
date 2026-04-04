@@ -68,9 +68,9 @@ setsid apptainer exec --nv \
     data.format_prompt=./examples/format_prompt/math_prm_steps.jinja \
     data.seed=${SEED} \
     data.max_response_length=1024 \
-    data.rollout_batch_size=16 \
-    data.val_batch_size=16 \
-    worker.actor.global_batch_size=16 \
+    data.rollout_batch_size=15 \
+    data.val_batch_size=15 \
+    worker.actor.global_batch_size=15 \
     worker.actor.model.lora.rank=64 \
     worker.actor.model.lora.alpha=64 \
     worker.actor.optim.lr=1e-6 \
