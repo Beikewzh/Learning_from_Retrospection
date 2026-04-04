@@ -4,9 +4,9 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=24
-#SBATCH --mem=160G
+#SBATCH --mem=240G
 #SBATCH --gres=gpu:4
-#SBATCH --time=3:00:00
+#SBATCH --time=6:00:00
 #SBATCH --output=/scratch/p/%u/Learning_from_Retrospection_runs/slurm_logs/slurm-%x-%j.out
 #SBATCH --requeue
 #SBATCH --signal=B:USR1@300
@@ -20,18 +20,35 @@ mkdir -p "${RUN_ROOT}/slurm_logs" "${RUN_ROOT}/checkpoints/tutorial"
 
 module load StdEnv/2023 apptainer/1.3.5 httpproxy
 
-LEARS_ETA="${LEARS_ETA:-0.02}"
+LEARS_ETA="${LEARS_ETA:-0.05}"
 LEARS_ETA_TAG="${LEARS_ETA_TAG:-${LEARS_ETA//./p}}"
-RUN_ID="tamia_tutorial_math_lears_lora_4gpu_eta${LEARS_ETA_TAG}_${SLURM_JOB_ID}"
+SEED="${SEED:-1}"
+RUN_LABEL="${RUN_LABEL:-final_lears_math_lora_4gpu_eta${LEARS_ETA_TAG}_seed${SEED}}"
+RUN_ID="${RUN_LABEL}_job${SLURM_JOB_ID}"
+PREEMPT_GRACE_SECONDS=240
 
 auto_requeue() {
-    echo "$(date): SIGUSR1 received, requeueing ${SLURM_JOB_ID} for checkpoint resume..."
+    echo "$(date): SIGUSR1 received, requesting graceful checkpoint before requeue for ${SLURM_JOB_ID}..."
+    if [[ -n "${APPTAINER_PID:-}" ]] && kill -0 "${APPTAINER_PID}" 2>/dev/null; then
+        kill -USR1 -- -"${APPTAINER_PID}" 2>/dev/null || true
+        for ((i = 0; i < PREEMPT_GRACE_SECONDS; i++)); do
+            if ! kill -0 "${APPTAINER_PID}" 2>/dev/null; then
+                break
+            fi
+            sleep 1
+        done
+        if kill -0 "${APPTAINER_PID}" 2>/dev/null; then
+            echo "$(date): Graceful shutdown timed out, sending SIGTERM to process group ${APPTAINER_PID}."
+            kill -TERM -- -"${APPTAINER_PID}" 2>/dev/null || true
+            sleep 10
+        fi
+    fi
     scontrol requeue "${SLURM_JOB_ID}"
     exit 0
 }
 trap auto_requeue SIGUSR1
 
-apptainer exec --nv \
+setsid apptainer exec --nv \
   --bind "${REPO}:/workspace" \
   --env http_proxy="${http_proxy:-}" \
   --env https_proxy="${https_proxy:-}" \
@@ -55,6 +72,7 @@ apptainer exec --nv \
     'data.val_files=/workspace/data/math500/test.parquet' \
     data.prompt_key=problem \
     data.answer_key=answer \
+    data.seed=${SEED} \
     data.max_response_length=1024 \
     data.rollout_batch_size=16 \
     data.val_batch_size=16 \
@@ -62,6 +80,7 @@ apptainer exec --nv \
     worker.actor.model.lora.rank=64 \
     worker.actor.model.lora.alpha=64 \
     worker.actor.optim.lr=1e-6 \
+    worker.rollout.seed=${SEED} \
     worker.rollout.tensor_parallel_size=1 \
     worker.rollout.dtype=fp16 \
     worker.actor.fsdp.torch_dtype=fp16 \
@@ -123,7 +142,7 @@ apptainer exec --nv \
     research.tracing.flush_every_n_steps=20 \
     research.tracing.save_tokens=true \
     research.tracing.save_decoded_text=true \
-    research.tracing.save_latents=true \
+    research.tracing.save_latents=false \
     research.tracing.save_ar_error=true" &
 
 APPTAINER_PID=$!

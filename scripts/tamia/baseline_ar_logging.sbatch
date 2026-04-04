@@ -20,15 +20,30 @@ module load StdEnv/2023 apptainer/1.3.5
 
 # SLURM_JOB_ID is preserved on requeue so RUN_ID stays the same across resumes
 RUN_ID="tamia_baseline_ar_logging_${SLURM_JOB_ID}"
+PREEMPT_GRACE_SECONDS=240
 
 auto_requeue() {
-    echo "$(date): SIGUSR1 received — requeueing ${SLURM_JOB_ID} for checkpoint resume..."
+    echo "$(date): SIGUSR1 received, requesting graceful checkpoint before requeue for ${SLURM_JOB_ID}..."
+    if [[ -n "${APPTAINER_PID:-}" ]] && kill -0 "${APPTAINER_PID}" 2>/dev/null; then
+        kill -USR1 -- -"${APPTAINER_PID}" 2>/dev/null || true
+        for ((i = 0; i < PREEMPT_GRACE_SECONDS; i++)); do
+            if ! kill -0 "${APPTAINER_PID}" 2>/dev/null; then
+                break
+            fi
+            sleep 1
+        done
+        if kill -0 "${APPTAINER_PID}" 2>/dev/null; then
+            echo "$(date): Graceful shutdown timed out, sending SIGTERM to process group ${APPTAINER_PID}."
+            kill -TERM -- -"${APPTAINER_PID}" 2>/dev/null || true
+            sleep 10
+        fi
+    fi
     scontrol requeue "${SLURM_JOB_ID}"
     exit 0
 }
 trap auto_requeue SIGUSR1
 
-apptainer exec --nv \
+setsid apptainer exec --nv \
   --bind "${REPO}:/workspace" \
   --env HF_HUB_OFFLINE=1 \
   --env HF_DATASETS_OFFLINE=1 \

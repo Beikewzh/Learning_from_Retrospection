@@ -18,6 +18,7 @@ This trainer supports model-agonistic model initialization with huggingface.
 
 import json
 import os
+import signal
 import uuid
 from collections import defaultdict
 from copy import deepcopy
@@ -222,6 +223,10 @@ class RayPPOTrainer:
         self.best_val_reward_score = -1.0
         self.best_global_step = None
         self.lears_manager: Optional["LeaRSManager"] = None
+        self._preemption_requested = False
+        self._preemption_signal: Optional[int] = None
+        self._saved_preemption_checkpoint = False
+        self._previous_signal_handlers: dict[int, Any] = {}
 
         self.hybrid_engine = config.worker.hybrid_engine
         self.role_worker_mapping = role_worker_mapping
@@ -289,6 +294,40 @@ class RayPPOTrainer:
             from research.manager import LeaRSManager
 
             self.lears_manager = LeaRSManager(config=config.research, checkpoint_root=config.trainer.save_checkpoint_path)
+
+    def _handle_preemption_signal(self, signum, _frame) -> None:
+        if not self._preemption_requested:
+            print(
+                f"Received signal {signum}; will save a checkpoint and stop after the current step."
+            )
+        self._preemption_requested = True
+        self._preemption_signal = signum
+
+    def _install_signal_handlers(self) -> None:
+        for sig in (signal.SIGUSR1, signal.SIGTERM):
+            try:
+                self._previous_signal_handlers[sig] = signal.getsignal(sig)
+                signal.signal(sig, self._handle_preemption_signal)
+            except Exception as exc:
+                print(f"Unable to install handler for signal {sig}: {exc}")
+
+    def _restore_signal_handlers(self) -> None:
+        for sig, handler in self._previous_signal_handlers.items():
+            try:
+                signal.signal(sig, handler)
+            except Exception as exc:
+                print(f"Unable to restore handler for signal {sig}: {exc}")
+        self._previous_signal_handlers.clear()
+
+    def _checkpoint_and_stop_for_preemption(self) -> None:
+        if self._saved_preemption_checkpoint:
+            return
+        print(
+            f"Preemption requested via signal {self._preemption_signal}; "
+            f"saving checkpoint at global_step={self.global_step}."
+        )
+        self._save_checkpoint()
+        self._saved_preemption_checkpoint = True
 
     def init_workers(self) -> None:
         """Init resource pool and worker group"""
@@ -612,32 +651,35 @@ class RayPPOTrainer:
         self.global_step = 0
         main_tqdm = tqdm(range(self.training_steps), desc="Running step", position=0)
         val_metrics: Optional[dict[str, Any]] = None
+        stopped_for_preemption = False
+        self._install_signal_handlers()
 
-        # load checkpoint before doing anything
-        self._load_checkpoint()
-        main_tqdm.update(self.global_step)
+        try:
+            # load checkpoint before doing anything
+            self._load_checkpoint()
+            main_tqdm.update(self.global_step)
 
-        # perform validation before training
-        # currently, we only support validation using the reward_function.
-        if self.val_reward_fn is not None and self.config.trainer.val_before_train:
-            val_metrics = self._validate()
-            self.logger.log(data=val_metrics, step=self.global_step)
-            if self.config.trainer.val_only:
-                if self.lears_manager is not None:
-                    self.lears_manager.close()
-                return
+            # perform validation before training
+            # currently, we only support validation using the reward_function.
+            if self.val_reward_fn is not None and self.config.trainer.val_before_train:
+                val_metrics = self._validate()
+                self.logger.log(data=val_metrics, step=self.global_step)
+                if self.config.trainer.val_only:
+                    if self.lears_manager is not None:
+                        self.lears_manager.close()
+                    return
 
-        self.data_iterator = iter(self.train_dataloader)
-        while self.global_step < self.training_steps:
-            self.global_step += 1
+            self.data_iterator = iter(self.train_dataloader)
+            while self.global_step < self.training_steps:
+                self.global_step += 1
 
-            metrics, timing_raw = {}, {}
-            with timer("step", timing_raw):
-                # make a batch of data
-                with timer("gen", timing_raw):
-                    self.actor_rollout_ref_wg.prepare_rollout_engine()
-                    batch = self._make_batch_data(metrics=metrics)
-                    self.actor_rollout_ref_wg.release_rollout_engine()
+                metrics, timing_raw = {}, {}
+                with timer("step", timing_raw):
+                    # make a batch of data
+                    with timer("gen", timing_raw):
+                        self.actor_rollout_ref_wg.prepare_rollout_engine()
+                        batch = self._make_batch_data(metrics=metrics)
+                        self.actor_rollout_ref_wg.release_rollout_engine()
 
                 # balance the number of valid tokens on each dp rank.
                 # NOTE: this breaks the order of data inside the batch.
@@ -792,24 +834,39 @@ class RayPPOTrainer:
                     with timer("save_checkpoint", timing_raw):
                         self._save_checkpoint()
 
-            # collect metrics
-            num_gpus = self.resource_pool_manager.get_num_gpus()
-            metrics.update(compute_data_metrics(batch=batch, use_critic=self.use_critic))
-            metrics.update(compute_timing_metrics(batch=batch, timing_raw=timing_raw))
-            metrics.update(compute_throughout_metrics(batch=batch, timing_raw=timing_raw, num_gpus=num_gpus))
+                # collect metrics
+                num_gpus = self.resource_pool_manager.get_num_gpus()
+                metrics.update(compute_data_metrics(batch=batch, use_critic=self.use_critic))
+                metrics.update(compute_timing_metrics(batch=batch, timing_raw=timing_raw))
+                metrics.update(compute_throughout_metrics(batch=batch, timing_raw=timing_raw, num_gpus=num_gpus))
 
-            self.logger.log(data=metrics, step=self.global_step)
-            main_tqdm.update()
+                if self._preemption_requested:
+                    metrics["system/preemption_signal"] = float(self._preemption_signal or 0)
+                    metrics["system/preemption_requested"] = 1.0
 
-        # perform validation after training
-        if self.val_reward_fn is not None and self.config.trainer.val_freq > 0:
-            if val_metrics is None or self.global_step % self.config.trainer.val_freq != 0:
-                val_metrics = self._validate()
-                self.logger.log(data=val_metrics, step=self.global_step)
+                self.logger.log(data=metrics, step=self.global_step)
+                main_tqdm.update()
 
-            print(f"Final validation metrics:\n{convert_dict_to_str(unflatten_dict(val_metrics))}")
+                if self._preemption_requested:
+                    self._checkpoint_and_stop_for_preemption()
+                    stopped_for_preemption = True
+                    break
 
-        if self.config.trainer.save_freq <= 0 or self.global_step % self.config.trainer.save_freq != 0:
-            self._save_checkpoint()
-        if self.lears_manager is not None:
-            self.lears_manager.close()
+            if stopped_for_preemption:
+                print("Stopping training loop after preemption checkpoint.")
+                return
+
+            # perform validation after training
+            if self.val_reward_fn is not None and self.config.trainer.val_freq > 0:
+                if val_metrics is None or self.global_step % self.config.trainer.val_freq != 0:
+                    val_metrics = self._validate()
+                    self.logger.log(data=val_metrics, step=self.global_step)
+
+                print(f"Final validation metrics:\n{convert_dict_to_str(unflatten_dict(val_metrics))}")
+
+            if self.config.trainer.save_freq <= 0 or self.global_step % self.config.trainer.save_freq != 0:
+                self._save_checkpoint()
+        finally:
+            self._restore_signal_handlers()
+            if self.lears_manager is not None:
+                self.lears_manager.close()

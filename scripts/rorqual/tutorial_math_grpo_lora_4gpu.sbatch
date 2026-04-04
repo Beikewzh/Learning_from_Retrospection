@@ -1,30 +1,26 @@
 #!/bin/bash
-#SBATCH --job-name=tamia-math-grpo-lora-4g-lenpen
-#SBATCH --account=aip-tyrell
+#SBATCH --job-name=rorqual-math-grpo-lora-4g
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=24
 #SBATCH --mem=240G
 #SBATCH --gres=gpu:4
 #SBATCH --time=6:00:00
-#SBATCH --output=/scratch/p/%u/Learning_from_Retrospection_runs/slurm_logs/slurm-%x-%j.out
+#SBATCH --output=slurm_logs/slurm-%x-%j.out
 #SBATCH --requeue
 #SBATCH --signal=B:USR1@300
 
 set -euo pipefail
 
 REPO="${SLURM_SUBMIT_DIR:-$(pwd)}"
-RUN_ROOT="${SCRATCH:-/scratch/p/${USER}}/Learning_from_Retrospection_runs"
+RUN_ROOT="${SCRATCH:-${HOME}/scratch}/Learning_from_Retrospection_runs"
 cd "${REPO}"
-mkdir -p "${RUN_ROOT}/slurm_logs" "${RUN_ROOT}/checkpoints/tutorial"
+mkdir -p slurm_logs "${RUN_ROOT}/checkpoints/tutorial"
 
-module load StdEnv/2023 apptainer/1.3.5 httpproxy
+module load StdEnv/2023 apptainer/1.3.5
 
-LENGTH_PENALTY="${LENGTH_PENALTY:-1e-5}"
-LENGTH_THRESHOLD="${LENGTH_THRESHOLD:-512}"
-LENGTH_PENALTY_TAG="${LENGTH_PENALTY_TAG:-${LENGTH_PENALTY//./p}}"
 SEED="${SEED:-1}"
-RUN_LABEL="${RUN_LABEL:-final_lenpen_math_grpo_lora_4gpu_p${LENGTH_PENALTY_TAG}_seed${SEED}}"
+RUN_LABEL="${RUN_LABEL:-final_vanilla_math_grpo_lora_4gpu_rorqual_seed${SEED}}"
 RUN_ID="${RUN_LABEL}_job${SLURM_JOB_ID}"
 PREEMPT_GRACE_SECONDS=240
 
@@ -51,12 +47,6 @@ trap auto_requeue SIGUSR1
 
 setsid apptainer exec --nv \
   --bind "${REPO}:/workspace" \
-  --env http_proxy="${http_proxy:-}" \
-  --env https_proxy="${https_proxy:-}" \
-  --env HTTP_PROXY="${HTTP_PROXY:-}" \
-  --env HTTPS_PROXY="${HTTPS_PROXY:-}" \
-  --env no_proxy="${no_proxy:-}" \
-  --env NO_PROXY="${NO_PROXY:-}" \
   --env HF_HUB_OFFLINE=1 \
   --env HF_DATASETS_OFFLINE=1 \
   --env TRANSFORMERS_OFFLINE=1 \
@@ -81,16 +71,13 @@ setsid apptainer exec --nv \
     worker.actor.model.lora.rank=64 \
     worker.actor.model.lora.alpha=64 \
     worker.actor.optim.lr=1e-6 \
-    worker.rollout.seed=${SEED} \
     worker.rollout.tensor_parallel_size=1 \
     worker.rollout.dtype=fp16 \
+    worker.rollout.seed=${SEED} \
     worker.actor.fsdp.torch_dtype=fp16 \
     worker.actor.fsdp.mp_param_dtype=fp16 \
     worker.ref.fsdp.torch_dtype=fp16 \
     worker.ref.fsdp.mp_param_dtype=fp16 \
-    worker.reward.reward_function=./examples/reward_function/math_length_penalty.py:compute_score \
-    worker.reward.reward_function_kwargs.length_threshold=${LENGTH_THRESHOLD} \
-    worker.reward.reward_function_kwargs.length_penalty_per_token=${LENGTH_PENALTY} \
     trainer.n_gpus_per_node=4 \
     trainer.total_epochs=1 \
     trainer.max_steps=100 \
