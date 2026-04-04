@@ -7,7 +7,7 @@ cd "${REPO_ROOT}"
 if [[ $# -gt 0 ]]; then
     SEEDS=("$@")
 else
-    SEEDS=(1 2 3 4)
+    SEEDS=(3 4)
 fi
 
 RORQUAL_ACCOUNT="${RORQUAL_ACCOUNT:-rrg-bengioy-ad_gpu}"

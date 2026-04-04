@@ -7,10 +7,10 @@ cd "${REPO_ROOT}"
 if [[ $# -gt 0 ]]; then
     SEEDS=("$@")
 else
-    SEEDS=(1 2 3 4)
+    SEEDS=(1 2)
 fi
 
-FIR_ACCOUNT="${FIR_ACCOUNT:?Set FIR_ACCOUNT to your Fir Slurm account before submitting.}"
+FIR_ACCOUNT="${FIR_ACCOUNT:-rrg-bengioy-ad_gpu}"
 
 submit_job() {
     local script_path="$1"
