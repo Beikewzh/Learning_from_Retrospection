@@ -1,29 +1,28 @@
 #!/bin/bash
-#SBATCH --job-name=tamia-math-prm-cpu-4g
-#SBATCH --account=aip-tyrell
+#SBATCH --job-name=rorqual-math-prm-cpu-4g
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=24
 #SBATCH --mem=240G
-#SBATCH --gres=gpu:4
-#SBATCH --time=6:00:00
-#SBATCH --output=/scratch/p/%u/Learning_from_Retrospection_runs/slurm_logs/slurm-%x-%j.out
+#SBATCH --gpus-per-node=h100:4
+#SBATCH --time=3:00:00
+#SBATCH --output=slurm_logs/slurm-%x-%j.out
 #SBATCH --requeue
 #SBATCH --signal=B:USR1@300
 
 set -euo pipefail
 
 REPO="${SLURM_SUBMIT_DIR:-$(pwd)}"
-RUN_ROOT="${SCRATCH:-/scratch/p/${USER}}/Learning_from_Retrospection_runs"
+RUN_ROOT="${SCRATCH:-${HOME}/scratch}/Learning_from_Retrospection_runs"
 cd "${REPO}"
-mkdir -p "${RUN_ROOT}/slurm_logs" "${RUN_ROOT}/checkpoints/tutorial"
+mkdir -p slurm_logs "${RUN_ROOT}/checkpoints/tutorial"
 
-module load StdEnv/2023 apptainer/1.3.5 httpproxy
+module load StdEnv/2023 apptainer/1.3.5
 
 PRM_WEIGHT="${PRM_WEIGHT:-0.1}"
 PRM_WEIGHT_TAG="${PRM_WEIGHT_TAG:-${PRM_WEIGHT//./p}}"
 SEED="${SEED:-1}"
-RUN_LABEL="${RUN_LABEL:-final_prm_math_cpu_4gpu_w${PRM_WEIGHT_TAG}_seed${SEED}}"
+RUN_LABEL="${RUN_LABEL:-final_prm_math_cpu_4gpu_rorqual_w${PRM_WEIGHT_TAG}_seed${SEED}}"
 RUN_ID="${RUN_LABEL}_job${SLURM_JOB_ID}"
 PREEMPT_GRACE_SECONDS=240
 
@@ -50,12 +49,6 @@ trap auto_requeue SIGUSR1
 
 setsid apptainer exec --nv \
   --bind "${REPO}:/workspace" \
-  --env http_proxy="${http_proxy:-}" \
-  --env https_proxy="${https_proxy:-}" \
-  --env HTTP_PROXY="${HTTP_PROXY:-}" \
-  --env HTTPS_PROXY="${HTTPS_PROXY:-}" \
-  --env no_proxy="${no_proxy:-}" \
-  --env NO_PROXY="${NO_PROXY:-}" \
   --env HF_HUB_OFFLINE=1 \
   --env HF_DATASETS_OFFLINE=1 \
   --env TRANSFORMERS_OFFLINE=1 \

@@ -33,11 +33,11 @@ for seed in "${SEEDS[@]}"; do
         "LENGTH_PENALTY=1e-5" \
         "LENGTH_PENALTY_TAG=1e-5" \
         "RUN_LABEL=final_lenpen_math_grpo_lora_4gpu_fir_p1e-5_seed${seed}"
-    submit_job scripts/fir/tutorial_math_prm_4gpu.sbatch \
+    submit_job scripts/fir/tutorial_math_prm_cpu_4gpu.sbatch \
         "SEED=${seed}" \
         "PRM_WEIGHT=0.1" \
         "PRM_WEIGHT_TAG=0p1" \
-        "RUN_LABEL=final_prm_math_4gpu_fir_w0p1_seed${seed}"
+        "RUN_LABEL=final_prm_math_cpu_4gpu_fir_w0p1_seed${seed}"
     submit_job scripts/fir/tutorial_math_lears_lora_4gpu.sbatch \
         "SEED=${seed}" \
         "LEARS_ETA=0.05" \
