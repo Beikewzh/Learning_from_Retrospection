@@ -1,0 +1,1 @@
+tutorial_game24_prm_4gpu.sbatch
