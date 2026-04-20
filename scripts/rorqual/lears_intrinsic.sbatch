@@ -7,7 +7,7 @@
 #SBATCH --mem=500G
 #SBATCH --gres=gpu:4
 #SBATCH --exclusive
-#SBATCH --time=6:00:00
+#SBATCH --time=12:00:00
 #SBATCH --output=slurm_logs/slurm-%x-%j.out
 #SBATCH --requeue
 #SBATCH --signal=B:USR1@300

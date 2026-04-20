@@ -1,69 +1,132 @@
+# Copyright 2024 Bytedance Ltd. and/or its affiliates
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+import json
 import re
 from typing import Any
-
-from research.offline.game24.score_game24 import score_game24_response
 
 
 REWARD_NAME = "game24"
 REWARD_TYPE = "batch"
 
-_CARD_LINE_RE = re.compile(r"cards\s*:\s*([^\n\r]+)", flags=re.IGNORECASE)
-_DIGIT_RE = re.compile(r"-?\d+")
+FORMAT_PATTERN = re.compile(r"<think>.*?</think>\s*<answer>.*?</answer>\s*", re.DOTALL | re.IGNORECASE)
+ANSWER_PATTERN = re.compile(r"<answer>(.*?)</answer>", re.DOTALL | re.IGNORECASE)
+CARDS_PATTERN = re.compile(r"Cards:\s*([0-9,\s]+)\.?", re.IGNORECASE)
+ALLOWED_EXPRESSION_PATTERN = re.compile(r"^[\d\s+\-*/().]+$")
 
 
-def _normalize_response_text(response: str) -> str:
-    return re.sub(r"\s*(<|>|/)\s*", r"\1", response).strip()
+def format_reward(response: str) -> float:
+    return 1.0 if re.fullmatch(FORMAT_PATTERN, response.strip()) else 0.0
 
 
-def _extract_cards_from_prompt(source_prompt: str, prompt: str) -> list[int]:
-    text = source_prompt or prompt or ""
-    m = _CARD_LINE_RE.search(text)
-    if m:
-        nums = [int(x) for x in _DIGIT_RE.findall(m.group(1))]
-        if len(nums) >= 4:
-            return nums[:4]
+def extract_answer(response: str) -> str:
+    match = ANSWER_PATTERN.search(response)
+    candidate = match.group(1).strip() if match else response.strip()
 
-    nums = [int(x) for x in _DIGIT_RE.findall(text)]
-    if len(nums) >= 4:
-        return nums[-4:]
-    raise ValueError("Could not parse 4 cards from prompt text")
+    no_match = re.search(r"\bNO\b\.?", candidate, re.IGNORECASE)
+    if no_match:
+        return "NO"
+
+    equation_match = re.search(r"([^<>\n]+?=\s*24)\s*$", candidate)
+    if equation_match:
+        return equation_match.group(1).strip()
+
+    for line in reversed(candidate.splitlines()):
+        line = line.strip()
+        if not line:
+            continue
+        if re.search(r"\bNO\b\.?", line, re.IGNORECASE):
+            return "NO"
+        if "=" in line:
+            return line
+        return line
+
+    return candidate
 
 
-def _is_possible_from_ground_truth(ground_truth: str) -> bool:
-    gt = (ground_truth or "").strip().upper().strip(". ")
-    return gt != "NO"
+def parse_cards(source_prompt: str) -> list[int]:
+    match = CARDS_PATTERN.search(source_prompt)
+    if not match:
+        return []
+
+    return [int(value.strip()) for value in match.group(1).split(",") if value.strip()]
+
+
+def parse_ground_truth(ground_truth: Any) -> tuple[bool, str]:
+    metadata = ground_truth
+    if isinstance(ground_truth, str):
+        try:
+            metadata = json.loads(ground_truth)
+        except json.JSONDecodeError:
+            metadata = {"ground_truth": ground_truth, "is_possible": ground_truth.strip().upper() != "NO"}
+
+    if not isinstance(metadata, dict):
+        raise TypeError(f"Unsupported Game24 ground truth type: {type(ground_truth)}")
+
+    return bool(metadata.get("is_possible", False)), str(metadata.get("ground_truth", "")).strip()
+
+
+def extract_numbers_from_expression(expression: str) -> list[int]:
+    return [int(number) for number in re.findall(r"\d+", expression)]
+
+
+def compute_equation(answer: str, cards: list[int]) -> bool:
+    expression = answer.split("=", 1)[0].strip()
+    expression = expression.replace("×", "*").replace("÷", "/")
+
+    if "**" in expression or "//" in expression:
+        return False
+
+    if not re.fullmatch(ALLOWED_EXPRESSION_PATTERN, expression):
+        return False
+
+    if sorted(extract_numbers_from_expression(expression)) != sorted(cards):
+        return False
+
+    try:
+        result = eval(expression, {"__builtins__": {}}, {})
+    except Exception:
+        return False
+
+    return abs(float(result) - 24.0) < 1e-6
+
+
+def accuracy_reward(response: str, ground_truth: Any, source_prompt: str) -> float:
+    is_possible, _ = parse_ground_truth(ground_truth)
+    answer = extract_answer(response)
+
+    if not is_possible:
+        return 1.0 if answer == "NO" else 0.0
+
+    cards = parse_cards(source_prompt)
+    if answer == "NO" or not cards:
+        return 0.0
+
+    return 1.0 if compute_equation(answer, cards) else 0.0
 
 
 def compute_score(reward_inputs: list[dict[str, Any]], format_weight: float = 0.1) -> list[dict[str, float]]:
-    scores: list[dict[str, float]] = []
+    scores = []
     for reward_input in reward_inputs:
-        response = _normalize_response_text(str(reward_input.get("response", "")))
-        ground_truth = str(reward_input.get("ground_truth", ""))
-
-        try:
-            cards = _extract_cards_from_prompt(
-                source_prompt=str(reward_input.get("source_prompt", "")),
-                prompt=str(reward_input.get("prompt", "")),
-            )
-            is_possible = _is_possible_from_ground_truth(ground_truth)
-            result = score_game24_response(
-                response=response,
-                cards=cards,
-                is_possible=is_possible,
-                ground_truth=ground_truth,
-            )
-            accuracy = float(result["score_accuracy"])
-            fmt = float(result["score_format"])
-        except Exception:
-            accuracy = 0.0
-            fmt = 0.0
-
-        overall = (1.0 - format_weight) * accuracy + format_weight * fmt
+        response = re.sub(r"\s*(<|>|/)\s*", r"\1", reward_input["response"])
+        format_score = format_reward(response)
+        accuracy_score = accuracy_reward(response, reward_input["ground_truth"], reward_input["source_prompt"])
         scores.append(
             {
-                "overall": overall,
-                "accuracy": accuracy,
-                "format": fmt,
+                "overall": (1 - format_weight) * accuracy_score + format_weight * format_score,
+                "format": format_score,
+                "accuracy": accuracy_score,
             }
         )
 

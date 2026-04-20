@@ -1,0 +1,22 @@
+#!/bin/bash
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+cd "${REPO_ROOT}"
+
+if [[ $# -gt 0 ]]; then
+    SEEDS=("$@")
+else
+    SEEDS=(1 2 3 4)
+fi
+
+submit_job() {
+    local seed="$1"
+    local export_args="ALL,SEED=${seed},LENGTH_ETA=0.01,LENGTH_ETA_TAG=0p01,RUN_LABEL=final_length_groupz_tanh_math_lora_4gpu_eta0p01_seed${seed}"
+    echo "Submitting length group-zscore tanh eta=0.01 seed ${seed}"
+    sbatch --export="${export_args}" scripts/tamia/final/math_length_lora_4gpu_group_zscore_tanh.sbatch
+}
+
+for seed in "${SEEDS[@]}"; do
+    submit_job "${seed}"
+done

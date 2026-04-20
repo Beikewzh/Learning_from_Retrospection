@@ -1,0 +1,3 @@
+[submodule "vendor/24game"]
+	path = vendor/24game
+	url = https://github.com/sylvain-wei/24-Game-Reasoning

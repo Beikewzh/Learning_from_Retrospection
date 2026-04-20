@@ -18,6 +18,7 @@ This trainer supports model-agonistic model initialization with huggingface.
 
 import json
 import os
+import signal
 import uuid
 from collections import defaultdict
 from copy import deepcopy
@@ -59,7 +60,7 @@ from .metrics import (
     compute_timing_metrics,
     reduce_metrics,
 )
-from research.intrinsic import compose_total_advantage, compute_intrinsic_gate
+from research.intrinsic import RunningZScore, apply_intrinsic_rule, compose_total_advantage, compute_intrinsic_gate
 
 if TYPE_CHECKING:
     from research.manager import LeaRSManager
@@ -164,8 +165,17 @@ def group_normalize_token_advantage(
     response_mask: torch.Tensor,
     index: np.ndarray,
     eps: float = 1e-6,
+    scope: str = "per_timestep",
 ) -> torch.Tensor:
-    """Normalize token-level advantages across rollout groups at each timestep."""
+    """Normalize token-level advantages across rollout groups."""
+    if scope == "pooled_batch":
+        vals = token_advantages[response_mask.bool()]
+        if vals.numel() <= 1:
+            return token_advantages * response_mask.float()
+        mean = vals.mean()
+        std = vals.std(unbiased=False)
+        return ((token_advantages - mean) / (std + eps)) * response_mask.float()
+
     output = torch.zeros_like(token_advantages)
     id2rows: dict[str, list[int]] = defaultdict(list)
     for row_idx, uid in enumerate(index.tolist()):
@@ -178,6 +188,19 @@ def group_normalize_token_advantage(
         row_idx_tensor = torch.tensor(rows, device=token_advantages.device, dtype=torch.long)
         group_adv = token_advantages[row_idx_tensor]
         group_mask = mask_bool[row_idx_tensor]
+        if scope == "pooled_sequence_group":
+            vals = group_adv[group_mask]
+            if vals.numel() <= 1:
+                output[row_idx_tensor] = group_adv * group_mask.float()
+                continue
+            mean = vals.mean()
+            std = vals.std(unbiased=False)
+            normalized = (group_adv - mean) / (std + eps)
+            output[row_idx_tensor] = normalized * group_mask.float()
+            continue
+        if scope != "per_timestep":
+            raise ValueError(f"Unsupported group normalization scope: {scope}")
+
         seq_len = group_adv.size(1)
         for t in range(seq_len):
             valid = group_mask[:, t]
@@ -222,6 +245,11 @@ class RayPPOTrainer:
         self.best_val_reward_score = -1.0
         self.best_global_step = None
         self.lears_manager: Optional["LeaRSManager"] = None
+        self._preemption_requested = False
+        self._preemption_signal: Optional[int] = None
+        self._saved_preemption_checkpoint = False
+        self._previous_signal_handlers: dict[int, Any] = {}
+        self.intrinsic_running_stats = RunningZScore()
 
         self.hybrid_engine = config.worker.hybrid_engine
         self.role_worker_mapping = role_worker_mapping
@@ -285,10 +313,44 @@ class RayPPOTrainer:
         config.worker.critic.optim.training_steps = self.training_steps
         print(f"Total training steps: {self.training_steps}")
 
-        if config.research.enabled:
+        if config.research.enabled and config.research.intrinsic.source == "ar_error":
             from research.manager import LeaRSManager
 
             self.lears_manager = LeaRSManager(config=config.research, checkpoint_root=config.trainer.save_checkpoint_path)
+
+    def _handle_preemption_signal(self, signum, _frame) -> None:
+        if not self._preemption_requested:
+            print(
+                f"Received signal {signum}; will save a checkpoint and stop after the current step."
+            )
+        self._preemption_requested = True
+        self._preemption_signal = signum
+
+    def _install_signal_handlers(self) -> None:
+        for sig in (signal.SIGUSR1, signal.SIGTERM):
+            try:
+                self._previous_signal_handlers[sig] = signal.getsignal(sig)
+                signal.signal(sig, self._handle_preemption_signal)
+            except Exception as exc:
+                print(f"Unable to install handler for signal {sig}: {exc}")
+
+    def _restore_signal_handlers(self) -> None:
+        for sig, handler in self._previous_signal_handlers.items():
+            try:
+                signal.signal(sig, handler)
+            except Exception as exc:
+                print(f"Unable to restore handler for signal {sig}: {exc}")
+        self._previous_signal_handlers.clear()
+
+    def _checkpoint_and_stop_for_preemption(self) -> None:
+        if self._saved_preemption_checkpoint:
+            return
+        print(
+            f"Preemption requested via signal {self._preemption_signal}; "
+            f"saving checkpoint at global_step={self.global_step}."
+        )
+        self._save_checkpoint()
+        self._saved_preemption_checkpoint = True
 
     def init_workers(self) -> None:
         """Init resource pool and worker group"""
@@ -612,32 +674,35 @@ class RayPPOTrainer:
         self.global_step = 0
         main_tqdm = tqdm(range(self.training_steps), desc="Running step", position=0)
         val_metrics: Optional[dict[str, Any]] = None
+        stopped_for_preemption = False
+        self._install_signal_handlers()
 
-        # load checkpoint before doing anything
-        self._load_checkpoint()
-        main_tqdm.update(self.global_step)
+        try:
+            # load checkpoint before doing anything
+            self._load_checkpoint()
+            main_tqdm.update(self.global_step)
 
-        # perform validation before training
-        # currently, we only support validation using the reward_function.
-        if self.val_reward_fn is not None and self.config.trainer.val_before_train:
-            val_metrics = self._validate()
-            self.logger.log(data=val_metrics, step=self.global_step)
-            if self.config.trainer.val_only:
-                if self.lears_manager is not None:
-                    self.lears_manager.close()
-                return
+            # perform validation before training
+            # currently, we only support validation using the reward_function.
+            if self.val_reward_fn is not None and self.config.trainer.val_before_train:
+                val_metrics = self._validate()
+                self.logger.log(data=val_metrics, step=self.global_step)
+                if self.config.trainer.val_only:
+                    if self.lears_manager is not None:
+                        self.lears_manager.close()
+                    return
 
-        self.data_iterator = iter(self.train_dataloader)
-        while self.global_step < self.training_steps:
-            self.global_step += 1
+            self.data_iterator = iter(self.train_dataloader)
+            while self.global_step < self.training_steps:
+                self.global_step += 1
 
-            metrics, timing_raw = {}, {}
-            with timer("step", timing_raw):
-                # make a batch of data
-                with timer("gen", timing_raw):
-                    self.actor_rollout_ref_wg.prepare_rollout_engine()
-                    batch = self._make_batch_data(metrics=metrics)
-                    self.actor_rollout_ref_wg.release_rollout_engine()
+                metrics, timing_raw = {}, {}
+                with timer("step", timing_raw):
+                    # make a batch of data
+                    with timer("gen", timing_raw):
+                        self.actor_rollout_ref_wg.prepare_rollout_engine()
+                        batch = self._make_batch_data(metrics=metrics)
+                        self.actor_rollout_ref_wg.release_rollout_engine()
 
                 # balance the number of valid tokens on each dp rank.
                 # NOTE: this breaks the order of data inside the batch.
@@ -693,6 +758,45 @@ class RayPPOTrainer:
                         )
                         batch.batch["intrinsic_token_advantages"] = intrinsic_advantages
                         metrics.update(intrinsic_metrics)
+                    elif self.config.research.enabled and self.config.research.intrinsic.source == "sampled_entropy":
+                        response_mask = batch.batch["response_mask"]
+                        sampled_entropy = -batch.batch["old_log_probs"].float()
+                        intrinsic_scores, intrinsic_metrics = apply_intrinsic_rule(
+                            ssl_error=sampled_entropy,
+                            response_mask=response_mask,
+                            intrinsic_mask=response_mask.bool(),
+                            extrinsic_scores=extrinsic_scores,
+                            cfg=self.config.research.intrinsic,
+                            stats=self.intrinsic_running_stats,
+                        )
+                        intrinsic_advantages = intrinsic_scores.to(
+                            device=extrinsic_scores.device,
+                            dtype=extrinsic_scores.dtype,
+                        )
+                        batch.batch["intrinsic_token_advantages"] = intrinsic_advantages
+                        metrics.update(intrinsic_metrics)
+                        metrics["research/intrinsic/active"] = 1.0
+                        metrics["research/intrinsic/source_sampled_entropy"] = 1.0
+                    elif self.config.research.enabled and self.config.research.intrinsic.source == "response_length":
+                        response_mask = batch.batch["response_mask"]
+                        response_lengths = response_mask.sum(dim=-1, keepdim=True).float()
+                        length_signal = response_lengths.expand_as(response_mask.float())
+                        intrinsic_scores, intrinsic_metrics = apply_intrinsic_rule(
+                            ssl_error=length_signal,
+                            response_mask=response_mask,
+                            intrinsic_mask=response_mask.bool(),
+                            extrinsic_scores=extrinsic_scores,
+                            cfg=self.config.research.intrinsic,
+                            stats=self.intrinsic_running_stats,
+                        )
+                        intrinsic_advantages = intrinsic_scores.to(
+                            device=extrinsic_scores.device,
+                            dtype=extrinsic_scores.dtype,
+                        )
+                        batch.batch["intrinsic_token_advantages"] = intrinsic_advantages
+                        metrics.update(intrinsic_metrics)
+                        metrics["research/intrinsic/active"] = 1.0
+                        metrics["research/intrinsic/source_response_length"] = 1.0
 
                     # apply kl penalty if available
                     if not self.config.algorithm.use_kl_loss and self.use_reference_policy:
@@ -725,6 +829,7 @@ class RayPPOTrainer:
                                 token_advantages=token_intrinsic,
                                 response_mask=batch.batch["response_mask"],
                                 index=batch.non_tensor_batch["uid"],
+                                scope=self.config.research.intrinsic.group_norm_scope,
                             )
 
                         gate, extrinsic_final, success = compute_intrinsic_gate(
@@ -792,24 +897,39 @@ class RayPPOTrainer:
                     with timer("save_checkpoint", timing_raw):
                         self._save_checkpoint()
 
-            # collect metrics
-            num_gpus = self.resource_pool_manager.get_num_gpus()
-            metrics.update(compute_data_metrics(batch=batch, use_critic=self.use_critic))
-            metrics.update(compute_timing_metrics(batch=batch, timing_raw=timing_raw))
-            metrics.update(compute_throughout_metrics(batch=batch, timing_raw=timing_raw, num_gpus=num_gpus))
+                # collect metrics
+                num_gpus = self.resource_pool_manager.get_num_gpus()
+                metrics.update(compute_data_metrics(batch=batch, use_critic=self.use_critic))
+                metrics.update(compute_timing_metrics(batch=batch, timing_raw=timing_raw))
+                metrics.update(compute_throughout_metrics(batch=batch, timing_raw=timing_raw, num_gpus=num_gpus))
 
-            self.logger.log(data=metrics, step=self.global_step)
-            main_tqdm.update()
+                if self._preemption_requested:
+                    metrics["system/preemption_signal"] = float(self._preemption_signal or 0)
+                    metrics["system/preemption_requested"] = 1.0
 
-        # perform validation after training
-        if self.val_reward_fn is not None and self.config.trainer.val_freq > 0:
-            if val_metrics is None or self.global_step % self.config.trainer.val_freq != 0:
-                val_metrics = self._validate()
-                self.logger.log(data=val_metrics, step=self.global_step)
+                self.logger.log(data=metrics, step=self.global_step)
+                main_tqdm.update()
 
-            print(f"Final validation metrics:\n{convert_dict_to_str(unflatten_dict(val_metrics))}")
+                if self._preemption_requested:
+                    self._checkpoint_and_stop_for_preemption()
+                    stopped_for_preemption = True
+                    break
 
-        if self.config.trainer.save_freq <= 0 or self.global_step % self.config.trainer.save_freq != 0:
-            self._save_checkpoint()
-        if self.lears_manager is not None:
-            self.lears_manager.close()
+            if stopped_for_preemption:
+                print("Stopping training loop after preemption checkpoint.")
+                return
+
+            # perform validation after training
+            if self.val_reward_fn is not None and self.config.trainer.val_freq > 0:
+                if val_metrics is None or self.global_step % self.config.trainer.val_freq != 0:
+                    val_metrics = self._validate()
+                    self.logger.log(data=val_metrics, step=self.global_step)
+
+                print(f"Final validation metrics:\n{convert_dict_to_str(unflatten_dict(val_metrics))}")
+
+            if self.config.trainer.save_freq <= 0 or self.global_step % self.config.trainer.save_freq != 0:
+                self._save_checkpoint()
+        finally:
+            self._restore_signal_handlers()
+            if self.lears_manager is not None:
+                self.lears_manager.close()
