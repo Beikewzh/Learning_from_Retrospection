@@ -12,8 +12,8 @@ fi
 
 submit_job() {
     local seed="$1"
-    local export_args="ALL,SEED=${seed},LEARS_ETA=0.1,LEARS_ETA_TAG=0p1,RUN_LABEL=final_lears_math_lora_4gpu_eta0p1_seed${seed}"
-    echo "Submitting LeaRS eta=0.1 seed ${seed}"
+    local export_args="ALL,SEED=${seed},LEARS_ETA=0.005,LEARS_ETA_TAG=0p005,RUN_LABEL=final_lears_math_lora_4gpu_eta0p005_seed${seed}"
+    echo "Submitting LeaRS eta=0.005 seed ${seed}"
     sbatch --export="${export_args}" scripts/tamia/tutorial_math_lears_lora_4gpu.sbatch
 }
 

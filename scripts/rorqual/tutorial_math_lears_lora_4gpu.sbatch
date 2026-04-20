@@ -5,7 +5,7 @@
 #SBATCH --cpus-per-task=24
 #SBATCH --mem=240G
 #SBATCH --gpus-per-node=h100:4
-#SBATCH --time=3:00:00
+#SBATCH --time=12:00:00
 #SBATCH --output=slurm_logs/slurm-%x-%j.out
 #SBATCH --requeue
 #SBATCH --signal=B:USR1@300
@@ -19,7 +19,7 @@ mkdir -p slurm_logs "${RUN_ROOT}/checkpoints/tutorial"
 
 module load StdEnv/2023 apptainer/1.3.5
 
-LEARS_ETA="${LEARS_ETA:-0.05}"
+LEARS_ETA="${LEARS_ETA:-0.005}"
 LEARS_ETA_TAG="${LEARS_ETA_TAG:-${LEARS_ETA//./p}}"
 SEED="${SEED:-1}"
 RUN_LABEL="${RUN_LABEL:-final_lears_math_lora_4gpu_rorqual_eta${LEARS_ETA_TAG}_seed${SEED}}"

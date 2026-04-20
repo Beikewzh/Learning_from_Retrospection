@@ -103,6 +103,16 @@ def _per_sequence_zscore(values: torch.Tensor, mask: torch.Tensor, epsilon: floa
     return (values - mean) / std
 
 
+def _transform_intrinsic(values: torch.Tensor, cfg: IntrinsicConfig) -> torch.Tensor:
+    if cfg.transform == "identity":
+        return values
+    if cfg.transform == "sigmoid":
+        return torch.sigmoid(values)
+    if cfg.transform == "tanh":
+        return torch.tanh(values)
+    raise ValueError(f"Unsupported intrinsic transform: {cfg.transform}")
+
+
 def _gate_failure_only(success: torch.Tensor, cfg: IntrinsicConfig) -> torch.Tensor:
     return (~success).float()
 
@@ -198,10 +208,12 @@ def apply_intrinsic_rule(
         stats.update(smoothed[intrinsic_mask_f.bool()])
     normalized = _normalize(smoothed, cfg=cfg, stats=stats, mask=intrinsic_mask_f)
 
+    transformed = _transform_intrinsic(normalized, cfg=cfg)
+
     if cfg.token_mode == "dense":
-        intrinsic = normalized
+        intrinsic = transformed
     elif cfg.token_mode == "last_token":
-        seq_signal = (normalized * intrinsic_mask_f).sum(dim=-1) / intrinsic_mask_f.sum(dim=-1).clamp_min(1.0)
+        seq_signal = (transformed * intrinsic_mask_f).sum(dim=-1) / intrinsic_mask_f.sum(dim=-1).clamp_min(1.0)
         intrinsic = torch.zeros_like(normalized)
         lengths = response_mask_f.sum(dim=-1).long().clamp_min(1)
         last_idx = lengths - 1
@@ -217,6 +229,7 @@ def apply_intrinsic_rule(
         raw_vals = raw[metric_mask]
         smooth_vals = smoothed[metric_mask]
         z_vals = normalized[metric_mask]
+        transformed_vals = transformed[metric_mask]
         intrinsic_vals = intrinsic[metric_mask]
         raw_mean = raw_vals.mean().item()
         raw_std = raw_vals.std(unbiased=False).item()
@@ -227,6 +240,8 @@ def apply_intrinsic_rule(
         intrinsic_min = intrinsic_vals.min().item()
         z_mean = z_vals.mean().item()
         z_std = z_vals.std(unbiased=False).item()
+        transformed_mean = transformed_vals.mean().item()
+        transformed_std = transformed_vals.std(unbiased=False).item()
     else:
         raw_mean = 0.0
         raw_std = 0.0
@@ -237,6 +252,8 @@ def apply_intrinsic_rule(
         intrinsic_min = 0.0
         z_mean = 0.0
         z_std = 0.0
+        transformed_mean = 0.0
+        transformed_std = 0.0
 
     gate, _, success = compute_intrinsic_gate(
         extrinsic_scores=extrinsic_scores,
@@ -255,5 +272,7 @@ def apply_intrinsic_rule(
         "research/intrinsic/min": intrinsic_min,
         "research/intrinsic/z_mean": z_mean,
         "research/intrinsic/z_std": z_std,
+        "research/intrinsic/transformed_mean": transformed_mean,
+        "research/intrinsic/transformed_std": transformed_std,
     }
     return intrinsic, metrics

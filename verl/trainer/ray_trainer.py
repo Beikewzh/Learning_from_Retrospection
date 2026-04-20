@@ -60,7 +60,7 @@ from .metrics import (
     compute_timing_metrics,
     reduce_metrics,
 )
-from research.intrinsic import compose_total_advantage, compute_intrinsic_gate
+from research.intrinsic import RunningZScore, apply_intrinsic_rule, compose_total_advantage, compute_intrinsic_gate
 
 if TYPE_CHECKING:
     from research.manager import LeaRSManager
@@ -165,8 +165,17 @@ def group_normalize_token_advantage(
     response_mask: torch.Tensor,
     index: np.ndarray,
     eps: float = 1e-6,
+    scope: str = "per_timestep",
 ) -> torch.Tensor:
-    """Normalize token-level advantages across rollout groups at each timestep."""
+    """Normalize token-level advantages across rollout groups."""
+    if scope == "pooled_batch":
+        vals = token_advantages[response_mask.bool()]
+        if vals.numel() <= 1:
+            return token_advantages * response_mask.float()
+        mean = vals.mean()
+        std = vals.std(unbiased=False)
+        return ((token_advantages - mean) / (std + eps)) * response_mask.float()
+
     output = torch.zeros_like(token_advantages)
     id2rows: dict[str, list[int]] = defaultdict(list)
     for row_idx, uid in enumerate(index.tolist()):
@@ -179,6 +188,19 @@ def group_normalize_token_advantage(
         row_idx_tensor = torch.tensor(rows, device=token_advantages.device, dtype=torch.long)
         group_adv = token_advantages[row_idx_tensor]
         group_mask = mask_bool[row_idx_tensor]
+        if scope == "pooled_sequence_group":
+            vals = group_adv[group_mask]
+            if vals.numel() <= 1:
+                output[row_idx_tensor] = group_adv * group_mask.float()
+                continue
+            mean = vals.mean()
+            std = vals.std(unbiased=False)
+            normalized = (group_adv - mean) / (std + eps)
+            output[row_idx_tensor] = normalized * group_mask.float()
+            continue
+        if scope != "per_timestep":
+            raise ValueError(f"Unsupported group normalization scope: {scope}")
+
         seq_len = group_adv.size(1)
         for t in range(seq_len):
             valid = group_mask[:, t]
@@ -227,6 +249,7 @@ class RayPPOTrainer:
         self._preemption_signal: Optional[int] = None
         self._saved_preemption_checkpoint = False
         self._previous_signal_handlers: dict[int, Any] = {}
+        self.intrinsic_running_stats = RunningZScore()
 
         self.hybrid_engine = config.worker.hybrid_engine
         self.role_worker_mapping = role_worker_mapping
@@ -290,7 +313,7 @@ class RayPPOTrainer:
         config.worker.critic.optim.training_steps = self.training_steps
         print(f"Total training steps: {self.training_steps}")
 
-        if config.research.enabled:
+        if config.research.enabled and config.research.intrinsic.source == "ar_error":
             from research.manager import LeaRSManager
 
             self.lears_manager = LeaRSManager(config=config.research, checkpoint_root=config.trainer.save_checkpoint_path)
@@ -735,6 +758,45 @@ class RayPPOTrainer:
                         )
                         batch.batch["intrinsic_token_advantages"] = intrinsic_advantages
                         metrics.update(intrinsic_metrics)
+                    elif self.config.research.enabled and self.config.research.intrinsic.source == "sampled_entropy":
+                        response_mask = batch.batch["response_mask"]
+                        sampled_entropy = -batch.batch["old_log_probs"].float()
+                        intrinsic_scores, intrinsic_metrics = apply_intrinsic_rule(
+                            ssl_error=sampled_entropy,
+                            response_mask=response_mask,
+                            intrinsic_mask=response_mask.bool(),
+                            extrinsic_scores=extrinsic_scores,
+                            cfg=self.config.research.intrinsic,
+                            stats=self.intrinsic_running_stats,
+                        )
+                        intrinsic_advantages = intrinsic_scores.to(
+                            device=extrinsic_scores.device,
+                            dtype=extrinsic_scores.dtype,
+                        )
+                        batch.batch["intrinsic_token_advantages"] = intrinsic_advantages
+                        metrics.update(intrinsic_metrics)
+                        metrics["research/intrinsic/active"] = 1.0
+                        metrics["research/intrinsic/source_sampled_entropy"] = 1.0
+                    elif self.config.research.enabled and self.config.research.intrinsic.source == "response_length":
+                        response_mask = batch.batch["response_mask"]
+                        response_lengths = response_mask.sum(dim=-1, keepdim=True).float()
+                        length_signal = response_lengths.expand_as(response_mask.float())
+                        intrinsic_scores, intrinsic_metrics = apply_intrinsic_rule(
+                            ssl_error=length_signal,
+                            response_mask=response_mask,
+                            intrinsic_mask=response_mask.bool(),
+                            extrinsic_scores=extrinsic_scores,
+                            cfg=self.config.research.intrinsic,
+                            stats=self.intrinsic_running_stats,
+                        )
+                        intrinsic_advantages = intrinsic_scores.to(
+                            device=extrinsic_scores.device,
+                            dtype=extrinsic_scores.dtype,
+                        )
+                        batch.batch["intrinsic_token_advantages"] = intrinsic_advantages
+                        metrics.update(intrinsic_metrics)
+                        metrics["research/intrinsic/active"] = 1.0
+                        metrics["research/intrinsic/source_response_length"] = 1.0
 
                     # apply kl penalty if available
                     if not self.config.algorithm.use_kl_loss and self.use_reference_policy:
@@ -767,6 +829,7 @@ class RayPPOTrainer:
                                 token_advantages=token_intrinsic,
                                 response_mask=batch.batch["response_mask"],
                                 index=batch.non_tensor_batch["uid"],
+                                scope=self.config.research.intrinsic.group_norm_scope,
                             )
 
                         gate, extrinsic_final, success = compute_intrinsic_gate(

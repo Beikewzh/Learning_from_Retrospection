@@ -40,7 +40,7 @@ for seed in "${SEEDS[@]}"; do
         "RUN_LABEL=final_prm_math_cpu_4gpu_rorqual_w0p1_seed${seed}"
     submit_job scripts/rorqual/tutorial_math_lears_lora_4gpu.sbatch \
         "SEED=${seed}" \
-        "LEARS_ETA=0.05" \
-        "LEARS_ETA_TAG=0p05" \
-        "RUN_LABEL=final_lears_math_lora_4gpu_rorqual_eta0p05_seed${seed}"
+        "LEARS_ETA=0.005" \
+        "LEARS_ETA_TAG=0p005" \
+        "RUN_LABEL=final_lears_math_lora_4gpu_rorqual_eta0p005_seed${seed}"
 done

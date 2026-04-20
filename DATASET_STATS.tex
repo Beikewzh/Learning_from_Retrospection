@@ -1,0 +1,100 @@
+\section{Dataset Statistics}
+
+\subsection{Math}
+
+\paragraph{Train set (\texttt{math12k}).}
+The Math training split is stored in \texttt{data/math12k/train.parquet}. It contains only two fields, \texttt{problem} and \texttt{answer}, so no explicit difficulty or subject metadata is available for the training set.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lrrrrr}
+\hline
+Split & Examples & Avg. input & Max input & Avg. answer & Max answer \\
+\hline
+\texttt{math12k} train & 12000 & 202.90 & 4309 & 6.31 & 159 \\
+\hline
+\end{tabular}
+\caption{Character-level statistics for the Math training set.}
+\end{table}
+
+\paragraph{Evaluation set (\texttt{math500}).}
+The Math evaluation split is stored in \texttt{data/math500/test.parquet}. In addition to \texttt{problem} and \texttt{answer}, it contains \texttt{subject} and \texttt{level} metadata.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lrrrrr}
+\hline
+Split & Examples & Avg. input & Max input & Avg. answer & Max answer \\
+\hline
+\texttt{math500} test & 500 & 195.89 & 1733 & 5.93 & 53 \\
+\hline
+\end{tabular}
+\caption{Character-level statistics for the Math evaluation set.}
+\end{table}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lr}
+\hline
+Level & Count \\
+\hline
+1 & 43 \\
+2 & 90 \\
+3 & 105 \\
+4 & 128 \\
+5 & 134 \\
+\hline
+\end{tabular}
+\caption{Difficulty-level breakdown for \texttt{math500}.}
+\end{table}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lr}
+\hline
+Subject & Count \\
+\hline
+Algebra & 124 \\
+Intermediate Algebra & 97 \\
+Prealgebra & 82 \\
+Number Theory & 62 \\
+Precalculus & 56 \\
+Geometry & 41 \\
+Counting \& Probability & 38 \\
+\hline
+\end{tabular}
+\caption{Subject breakdown for \texttt{math500}.}
+\end{table}
+
+\subsection{Game of 24}
+
+The Game of 24 data is stored in \texttt{vendor/24game/data/24game\_grpo/\{train,val\}.parquet}. Unlike Math, the prompts are much longer because each example includes the full game instructions in natural language. The data also includes an explicit \texttt{is\_possible} field, allowing us to report the solvable versus unsolvable ratio.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lrrrrr}
+\hline
+Split & Examples & Avg. input & Max input & Avg. answer & Max answer \\
+\hline
+train & 1638 & 1170.23 & 1173 & 15.52 & 46 \\
+val/test & 182 & 1170.20 & 1173 & 15.98 & 41 \\
+\hline
+\end{tabular}
+\caption{Character-level statistics for the Game of 24 dataset.}
+\end{table}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lrrrrr}
+\hline
+Split & Total & Solvable & Unsolvable & Solvable ratio & Unsolvable ratio \\
+\hline
+train & 1638 & 1216 & 422 & 0.7424 & 0.2576 \\
+val/test & 182 & 146 & 36 & 0.8022 & 0.1978 \\
+\hline
+\end{tabular}
+\caption{Solvable versus unsolvable breakdown for Game of 24.}
+\end{table}
+
+\paragraph{Summary.}
+Three dataset properties are especially relevant for interpreting results. First, the Math training set is much larger than the Game of 24 training set (12{,}000 vs.\ 1{,}638 examples). Second, Game of 24 prompts are substantially longer than Math prompts because the task instructions are embedded directly in each example. Third, the Game of 24 dataset is imbalanced toward solvable examples, particularly in validation, whereas Math500 provides explicit level and subject annotations but the Math training set does not.

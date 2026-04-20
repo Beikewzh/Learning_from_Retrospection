@@ -1,28 +1,29 @@
 #!/bin/bash
-#SBATCH --job-name=fir-math-lears-lora-4g
+#SBATCH --job-name=tamia-math-lears-sigmoid-4g
+#SBATCH --account=aip-tyrell
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=24
 #SBATCH --mem=240G
-#SBATCH --gpus-per-node=h100:4
+#SBATCH --gres=gpu:4
 #SBATCH --time=12:00:00
-#SBATCH --output=slurm_logs/slurm-%x-%j.out
+#SBATCH --output=/scratch/p/%u/Learning_from_Retrospection_runs/slurm_logs/slurm-%x-%j.out
 #SBATCH --requeue
 #SBATCH --signal=B:USR1@300
 
 set -euo pipefail
 
 REPO="${SLURM_SUBMIT_DIR:-$(pwd)}"
-RUN_ROOT="${SCRATCH:-${HOME}/scratch}/Learning_from_Retrospection_runs"
+RUN_ROOT="${SCRATCH:-/scratch/p/${USER}}/Learning_from_Retrospection_runs"
 cd "${REPO}"
-mkdir -p slurm_logs "${RUN_ROOT}/checkpoints/tutorial"
+mkdir -p "${RUN_ROOT}/slurm_logs" "${RUN_ROOT}/checkpoints/tutorial"
 
-module load StdEnv/2023 apptainer/1.3.5
+module load StdEnv/2023 apptainer/1.3.5 httpproxy
 
-LEARS_ETA="${LEARS_ETA:-0.005}"
+LEARS_ETA="${LEARS_ETA:-0.05}"
 LEARS_ETA_TAG="${LEARS_ETA_TAG:-${LEARS_ETA//./p}}"
 SEED="${SEED:-1}"
-RUN_LABEL="${RUN_LABEL:-final_lears_math_lora_4gpu_fir_eta${LEARS_ETA_TAG}_seed${SEED}}"
+RUN_LABEL="${RUN_LABEL:-final_lears_sigmoid_math_lora_4gpu_eta${LEARS_ETA_TAG}_seed${SEED}}"
 RUN_ID="${RUN_LABEL}_job${SLURM_JOB_ID}"
 PREEMPT_GRACE_SECONDS=240
 
@@ -49,6 +50,12 @@ trap auto_requeue SIGUSR1
 
 setsid apptainer exec --nv \
   --bind "${REPO}:/workspace" \
+  --env http_proxy="${http_proxy:-}" \
+  --env https_proxy="${https_proxy:-}" \
+  --env HTTP_PROXY="${HTTP_PROXY:-}" \
+  --env HTTPS_PROXY="${HTTPS_PROXY:-}" \
+  --env no_proxy="${no_proxy:-}" \
+  --env NO_PROXY="${NO_PROXY:-}" \
   --env HF_HUB_OFFLINE=1 \
   --env HF_DATASETS_OFFLINE=1 \
   --env TRANSFORMERS_OFFLINE=1 \
@@ -73,9 +80,9 @@ setsid apptainer exec --nv \
     worker.actor.model.lora.rank=64 \
     worker.actor.model.lora.alpha=64 \
     worker.actor.optim.lr=1e-6 \
+    worker.rollout.seed=${SEED} \
     worker.rollout.tensor_parallel_size=1 \
     worker.rollout.dtype=fp16 \
-    worker.rollout.seed=${SEED} \
     worker.actor.fsdp.torch_dtype=fp16 \
     worker.actor.fsdp.mp_param_dtype=fp16 \
     worker.ref.fsdp.torch_dtype=fp16 \
@@ -117,6 +124,8 @@ setsid apptainer exec --nv \
     research.ar.reload_every_n_steps=1 \
     research.ar.continue_from_latest=true \
     research.intrinsic.mode=weighted_additive \
+    research.intrinsic.source=ar_error \
+    research.intrinsic.transform=sigmoid \
     research.intrinsic.outcome_gated=true \
     research.intrinsic.success_threshold=0.5 \
     research.intrinsic.lambda_success=0.0 \

@@ -193,6 +193,8 @@ images*
 data/math500_local*.jsonl
 data/*_normalized.jsonl
 data
+data/
+*.csv
 # proposal pdf
 proposal/
 

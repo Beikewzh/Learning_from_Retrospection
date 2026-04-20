@@ -129,6 +129,8 @@ class ARConfig:
 @dataclass
 class IntrinsicConfig:
     mode: str = "weighted_additive"
+    source: str = "ar_error"
+    transform: str = "identity"
     outcome_gated: bool = True  # legacy knob, kept for backward compatibility
     success_threshold: float = 0.5
     lambda_success: float = 1e-5  # legacy knob, kept for backward compatibility
@@ -143,10 +145,15 @@ class IntrinsicConfig:
     lambda_success_gate: float = 0.25
     temporal_smoothing_window: int = 3
     group_norm_per_timestep: bool = False
+    group_norm_scope: str = "per_timestep"
 
     def post_init(self):
         if self.mode not in {"weighted_additive"}:
             raise ValueError(f"Unsupported intrinsic.mode: {self.mode}")
+        if self.source not in {"ar_error", "sampled_entropy", "response_length"}:
+            raise ValueError("intrinsic.source must be one of {'ar_error', 'sampled_entropy', 'response_length'}")
+        if self.transform not in {"identity", "sigmoid", "tanh"}:
+            raise ValueError("intrinsic.transform must be one of {'identity', 'sigmoid', 'tanh'}")
         if self.normalize not in {"running_zscore", "none", "per_sequence_zscore"}:
             raise ValueError(f"Unsupported intrinsic.normalize: {self.normalize}")
         if self.normalize_scope not in {"running_zscore", "none", "per_sequence_zscore"}:
@@ -169,6 +176,11 @@ class IntrinsicConfig:
             raise ValueError("intrinsic.lambda_success_gate must be >= 0")
         if self.temporal_smoothing_window <= 0:
             raise ValueError("intrinsic.temporal_smoothing_window must be > 0")
+        if self.group_norm_scope not in {"per_timestep", "pooled_sequence_group", "pooled_batch"}:
+            raise ValueError(
+                "intrinsic.group_norm_scope must be one of "
+                "{'per_timestep', 'pooled_sequence_group', 'pooled_batch'}"
+            )
 
 
 @dataclass
